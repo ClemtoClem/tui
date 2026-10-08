@@ -1,7 +1,7 @@
 /* apps/yocto-tui/panels/BuildPanel.hpp */
 #pragma once
 
-#include "../build/BuildRunner.hpp"
+#include "../runner/BuildRunner.hpp"
 #include "../config/YoctoConfig.hpp"
 
 #include <tui/App.hpp>

@@ -1,4 +1,4 @@
-/* example/yocto-tui/setup/SetupRunner.hpp */
+/* example/yocto-tui/runner/SetupRunner.hpp */
 #pragma once
 
 #include "../config/YoctoConfig.hpp"

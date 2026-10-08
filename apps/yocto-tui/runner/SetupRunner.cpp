@@ -1,4 +1,4 @@
-/* apps/yocto-tui/setup/SetupRunner.cpp */
+/* apps/yocto-tui/runner/SetupRunner.cpp */
 #include "SetupRunner.hpp"
 
 #include "../util/Shell.hpp"

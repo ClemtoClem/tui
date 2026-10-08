@@ -3,7 +3,7 @@
 
 #include "../config/ConfigManager.hpp"
 #include "../config/YoctoConfig.hpp"
-#include "../setup/SetupRunner.hpp"
+#include "../runner/SetupRunner.hpp"
 
 #include <tui/App.hpp>
 #include <tui/widget/Widget.hpp>
