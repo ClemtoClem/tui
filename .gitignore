@@ -2,3 +2,4 @@
 .cache/
 .claude/
 build/
+compile_commands.json
