@@ -3,9 +3,9 @@
 # ============================================================================
 #  Arborescence attendue :
 #
-#    lib/<nom>/include/<nom>/...   en-têtes publics   -> #include <nom/X.hpp>
-#    lib/<nom>/src/**.cpp          sources            -> libs/<nom>/lib<nom>.a
-#    lib/<nom>/tests/**.cpp        tests GoogleTest   -> un binaire par fichier
+#    libs/<nom>/include/<nom>/...   en-têtes publics   -> #include <nom/X.hpp>
+#    libs/<nom>/src/**.cpp          sources            -> libs/<nom>/lib<nom>.a
+#    libs/<nom>/tests/**.cpp        tests GoogleTest   -> un binaire par fichier
 #
 #    apps/<nom>/include/**         en-têtes internes  -> #include "X.hpp"
 #    apps/<nom>/src/main.cpp       point d'entrée     -> apps/<nom>/<nom>
@@ -111,7 +111,7 @@ TESTS_DIR  := $(OUT_DIR)/tests
 # ----------------------------------------------------------------------------
 #  Découverte des bibliothèques et des applications
 # ----------------------------------------------------------------------------
-LIBS := $(sort $(patsubst lib/%/,%,$(wildcard lib/*/)))
+LIBS := $(sort $(patsubst libs/%/,%,$(wildcard libs/*/)))
 APPS := $(sort $(patsubst apps/%/,%,$(wildcard apps/*/)))
 
 # Chemins canoniques
@@ -119,24 +119,24 @@ lib_archive  = $(LIBS_DIR)/$(1)/lib$(1).a
 app_binary   = $(APPS_DIR)/$(1)/$(1)
 app_archive  = $(APPS_DIR)/$(1)/lib$(1)-core.a
 
-ALL_LIB_INCLUDES := $(foreach l,$(LIBS),-Ilib/$(l)/include)
+ALL_LIB_INCLUDES := $(foreach l,$(LIBS),-Ilibs/$(l)/include)
 ALL_LIB_ARCHIVES := $(foreach l,$(LIBS),$(call lib_archive,$(l)))
 
 # ============================================================================
-#  Bibliothèques : lib/<nom>/src/**.cpp -> lib<nom>.a
+#  Bibliothèques : libs/<nom>/src/**.cpp -> lib<nom>.a
 # ============================================================================
 define LIB_RULES
 
-LIB_$(1)_SRCS  := $$(call rwildcard,lib/$(1)/src,*.cpp)
-LIB_$(1)_OBJS  := $$(patsubst lib/$(1)/src/%.cpp,$(LIBS_DIR)/$(1)/obj/%.o,$$(LIB_$(1)_SRCS))
+LIB_$(1)_SRCS  := $$(call rwildcard,libs/$(1)/src,*.cpp)
+LIB_$(1)_OBJS  := $$(patsubst libs/$(1)/src/%.cpp,$(LIBS_DIR)/$(1)/obj/%.o,$$(LIB_$(1)_SRCS))
 # Les en-têtes publics sont sous include/, les en-têtes privés à côté des sources.
-LIB_$(1)_INC   := -Ilib/$(1)/include -Ilib/$(1)/src
-LIB_$(1)_TESTS := $$(call rwildcard,lib/$(1)/tests,*.cpp)
-LIB_$(1)_TBINS := $$(patsubst lib/$(1)/tests/%.cpp,$(TESTS_DIR)/libs/$(1)/%,$$(LIB_$(1)_TESTS))
+LIB_$(1)_INC   := -Ilibs/$(1)/include -Ilibs/$(1)/src
+LIB_$(1)_TESTS := $$(call rwildcard,libs/$(1)/tests,*.cpp)
+LIB_$(1)_TBINS := $$(patsubst libs/$(1)/tests/%.cpp,$(TESTS_DIR)/libs/$(1)/%,$$(LIB_$(1)_TESTS))
 # Les tests voient les en-têtes de la bibliothèque, ceux des autres
-# bibliothèques, et leurs propres en-têtes d'aide (lib/<nom>/tests).
-LIB_$(1)_TESTINC := -Ilib/$(1)/tests $$(LIB_$(1)_INC) \
-                    $$(filter-out -Ilib/$(1)/include,$(ALL_LIB_INCLUDES))
+# bibliothèques, et leurs propres en-têtes d'aide (libs/<nom>/tests).
+LIB_$(1)_TESTINC := -Ilibs/$(1)/tests $$(LIB_$(1)_INC) \
+                    $$(filter-out -Ilibs/$(1)/include,$(ALL_LIB_INCLUDES))
 
 $(call lib_archive,$(1)): $$(LIB_$(1)_OBJS)
 	$$(Q)mkdir -p $$(@D)
@@ -144,14 +144,14 @@ $(call lib_archive,$(1)): $$(LIB_$(1)_OBJS)
 	$$(Q)rm -f $$@
 	$$(Q)$$(AR) rcs $$@ $$^
 
-$$(LIB_$(1)_OBJS): $(LIBS_DIR)/$(1)/obj/%.o: lib/$(1)/src/%.cpp
+$$(LIB_$(1)_OBJS): $(LIBS_DIR)/$(1)/obj/%.o: libs/$(1)/src/%.cpp
 	$$(Q)mkdir -p $$(@D)
 	$$(ECHO) "  CXX     $$<"
 	$$(Q)$$(CXX) $$(CXXFLAGS) $$(DEPFLAGS) $$(LIB_$(1)_INC) -c $$< -o $$@
 
 # Un binaire de test par fichier : un plantage ou un sanitizer qui déclenche
 # dans un fichier n'emporte pas les autres.
-$$(LIB_$(1)_TBINS): $(TESTS_DIR)/libs/$(1)/%: lib/$(1)/tests/%.cpp \
+$$(LIB_$(1)_TBINS): $(TESTS_DIR)/libs/$(1)/%: libs/$(1)/tests/%.cpp \
                     $(call lib_archive,$(1)) $(ALL_LIB_ARCHIVES)
 	$$(Q)mkdir -p $$(@D)
 	$$(ECHO) "  CXXLD   $$@"
@@ -239,6 +239,7 @@ APPS_NO_MAIN := $(foreach a,$(APPS),$(if $(APP_$(a)_MAIN),,$(a)))
 .PHONY: help info list list-libs list-apps list-tests \
         build-lib build-libs rebuild-lib rebuild-libs \
         build-app build-apps rebuild-app rebuild-apps run-app \
+        install-app uninstall-app \
         build-all rebuild-all \
         build-tests build-lib-tests build-app-tests \
         run-tests run-lib-tests run-app-tests check \
@@ -255,6 +256,8 @@ help:
 	@echo "  V=1                  afficher les commandes de compilation"
 	@echo "  NAME=<nom>           bibliothèque ou application visée"
 	@echo "  ARGS='...'           arguments passés au binaire exécuté"
+	@echo "  PREFIX=<chemin>      préfixe d'installation (défaut : /usr/local)"
+	@echo "  DESTDIR=<chemin>     racine de staging (paquets) : <DESTDIR><PREFIX>/bin"
 	@echo ""
 	@echo "Information :"
 	@echo "  info                            Afficher la configuration courante"
@@ -273,6 +276,8 @@ help:
 	@echo "  rebuild-app   NAME=<app>        Recompiler une application de zéro"
 	@echo "  rebuild-apps                    Recompiler toutes les applications"
 	@echo "  run-app       NAME=<app>        Exécuter une application"
+	@echo "  install-app   NAME=<app>        Installer dans <DESTDIR><PREFIX>/bin"
+	@echo "  uninstall-app NAME=<app>        Désinstaller de <DESTDIR><PREFIX>/bin"
 	@echo ""
 	@echo "Tout :"
 	@echo "  build-all / rebuild-all         Bibliothèques + applications"
@@ -385,6 +390,34 @@ run-app: require-name
 	@$(MAKE) --no-print-directory MODE=$(MODE) SAN=$(SAN) V=$(V) build-app NAME=$(NAME)
 	@echo "--- Exécution de $(NAME) ($(MODE)) ---"
 	@$(call app_binary,$(NAME)) $(ARGS)
+
+# ----------------------------------------------------------------------------
+#  Installation : <DESTDIR><PREFIX>/bin/<nom>
+#    make install-app NAME=cpp-maker                     (/usr/local/bin, sudo requis)
+#    make install-app NAME=cpp-maker PREFIX=~/.local     (sans privilèges)
+#    make install-app NAME=cpp-maker DESTDIR=/tmp/stage  (staging de paquet)
+#  Release par défaut : MODE=debug installerait un binaire instrumenté
+#  (sanitizers).
+# ----------------------------------------------------------------------------
+PREFIX  ?= /usr/local
+DESTDIR ?=
+INSTALL ?= install
+BINDIR   = $(DESTDIR)$(PREFIX)/bin
+
+install-app: require-name
+	@$(MAKE) --no-print-directory MODE=$(MODE) SAN=$(SAN) V=$(V) build-app NAME=$(NAME)
+	$(ECHO) "  INSTALL $(BINDIR)/$(NAME)"
+	$(Q)$(INSTALL) -d "$(BINDIR)"
+	$(Q)$(INSTALL) -m 755 "$(call app_binary,$(NAME))" "$(BINDIR)/$(NAME)"
+	@echo "$(NAME) installé : $(BINDIR)/$(NAME)"
+
+uninstall-app: require-name
+	@if [ ! -e "$(BINDIR)/$(NAME)" ]; then \
+	  echo "$(NAME) n'est pas installé dans $(BINDIR)."; \
+	else \
+	  echo "  RM      $(BINDIR)/$(NAME)"; \
+	  rm -f -- "$(BINDIR)/$(NAME)" && echo "$(NAME) désinstallé de $(BINDIR)."; \
+	fi
 
 # ----------------------------------------------------------------------------
 #  Tout

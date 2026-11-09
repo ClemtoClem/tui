@@ -1,0 +1,20 @@
+/* Exemple de feuille pour tui-gallery :
+ *   build/release/apps/tui-gallery/tui-gallery apps/tui-gallery/example.tcss
+ * Modifiez ce fichier pendant que la galerie tourne : il est rechargé à chaud. */
+
+$highlight: $accent;
+
+#sidebar { frame: double; border-title-color: $highlight; }
+
+Button {
+    min-width: 12;
+    &:hover { text-style: bold underline; }
+}
+
+Input:focus { background: $primary-darken-3; }
+
+ListView:focus { cursor-background: $highlight; cursor-color: $background; }
+
+Header { background: $primary-darken-2; icon-color: $highlight; }
+
+Footer { key-color: $highlight; }

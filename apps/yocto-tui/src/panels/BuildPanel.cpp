@@ -72,8 +72,9 @@ void BuildPanel::build_ui() {
     };
 
     target_input_ = std::make_shared<Input>();
-    target_input_->set_text(config_.image_recipe);
-    target_input_->set_placeholder("core-image-minimal");
+    default_target_ = config_.image_recipe;
+    target_input_->set_text(default_target_);
+    target_input_->set_placeholder("core-image-minimal -c populate_sdk");
 
     start_button_ = std::make_shared<Button>("Lancer bitbake");
     start_button_->set_on_click([this] { start_build(); });
@@ -84,6 +85,35 @@ void BuildPanel::build_ui() {
     auto buttons = std::make_shared<Horizontal>();
     buttons->add_child(start_button_, LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
     buttons->add_child(cancel_button_, LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
+
+    // Raccourcis : remplissent la cible à partir du projet (F2).
+    auto preset = [this](const std::string& label, std::function<std::string()> make) {
+        auto b = std::make_shared<Button>(label);
+        b->set_on_click([this, make] {
+            if (building_) return;
+            target_input_->set_text(make());
+        });
+        return b;
+    };
+    auto image_target = [this] {
+        return config_.project.image.name.empty() ? config_.image_recipe : config_.project.image.name;
+    };
+    auto presets1 = std::make_shared<Horizontal>();
+    presets1->add_child(preset("Image", image_target), LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
+    presets1->add_child(preset("SDK", [image_target] { return image_target() + " -c populate_sdk"; }),
+                        LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
+    presets1->add_child(preset("Apps du projet", [this] {
+        std::string t;
+        for (const auto& a : config_.project.apps) {
+            if (a.enabled && !a.name.empty()) t += (t.empty() ? "" : " ") + a.name;
+        }
+        return t;
+    }), LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
+    auto presets2 = std::make_shared<Horizontal>();
+    presets2->add_child(preset("cleansstate image", [image_target] { return "-c cleansstate " + image_target(); }),
+                        LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
+    presets2->add_child(preset("-k (continuer)", [image_target] { return "-k " + image_target(); }),
+                        LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
 
     progress_ = std::make_shared<ProgressBar>();
     progress_->set_progress(0.0);
@@ -107,8 +137,11 @@ void BuildPanel::build_ui() {
     hints->set_wrap(true);
 
     auto left = std::make_shared<Vertical>();
-    left->add_child(lbl("Cible bitbake (recette d'image)"), LayoutParams::fixed(1));
+    left->add_child(lbl("Arguments bitbake (cible et options)"), LayoutParams::fixed(1));
     left->add_child(target_input_, LayoutParams::fixed(1));
+    left->add_child(lbl("Raccourcis :"), LayoutParams::fixed(1));
+    left->add_child(presets1, LayoutParams::fixed(1));
+    left->add_child(presets2, LayoutParams::fixed(1));
     left->add_child(buttons, LayoutParams::fixed(1));
     left->add_child(std::make_shared<Label>(""), LayoutParams::fixed(1));
     left->add_child(progress_, LayoutParams::fixed(1));
@@ -151,9 +184,13 @@ void BuildPanel::build_ui() {
 void BuildPanel::set_config(const YoctoConfig& cfg) {
     config_ = cfg;
     config_.apply_defaults();
-    if (!building_) {
-        target_input_->set_text(config_.image_recipe);
+    // Cible par défaut : l'image du projet si elle existe. On ne remplace
+    // la saisie que si l'utilisateur ne l'a pas modifiée.
+    const std::string def = config_.project.image.name.empty() ? config_.image_recipe : config_.project.image.name;
+    if (!building_ && (target_input_->text().empty() || target_input_->text() == default_target_)) {
+        target_input_->set_text(def);
     }
+    default_target_ = def;
 }
 
 void BuildPanel::start_build() {
@@ -195,6 +232,15 @@ void BuildPanel::start_build() {
         status_label_->set_foreground(kError);
         if (on_status_) on_status_("Erreur : impossible de lancer bitbake");
     }
+}
+
+void BuildPanel::start_target(const std::string& target) {
+    if (building_) {
+        if (on_status_) on_status_("Erreur : un build est déjà en cours");
+        return;
+    }
+    target_input_->set_text(target);
+    start_build();
 }
 
 void BuildPanel::cancel_build() {
@@ -251,6 +297,7 @@ void BuildPanel::append_log(const std::string& line) {
         if (nl != std::string::npos) log_buffer_.erase(0, nl + 1);
     }
     log_view_->set_text(log_buffer_);
+    log_view_->scroll_to_end();
 }
 
 void BuildPanel::update_progress() {

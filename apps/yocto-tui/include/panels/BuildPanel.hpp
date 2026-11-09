@@ -36,6 +36,9 @@ public:
     /// temps écoulé pendant un build.
     void tick();
 
+    /// Lance `bitbake <target>` (demandé par l'onglet « Générer & appliquer »).
+    void start_target(const std::string& target);
+
     void set_on_status(std::function<void(const std::string&)> cb) {
         on_status_ = std::move(cb);
     }
@@ -71,6 +74,7 @@ private:
     bool cancelled_ = false;
     std::chrono::steady_clock::time_point start_time_;
     std::string log_buffer_;
+    std::string default_target_;
 
     std::function<void(const std::string&)> on_status_;
 };

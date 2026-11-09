@@ -44,7 +44,8 @@ public:
     void set_on_output(OutputCallback cb) { on_output_ = std::move(cb); }
     void set_on_done(DoneCallback cb) { on_done_ = std::move(cb); }
 
-    /// Lance `bitbake <target>`. Retourne false si un build tourne
+    /// Lance `bitbake <target>` ; `target` peut contenir des options
+    /// (ex : « formation-image -c populate_sdk », « -k mon-image »). Retourne false si un build tourne
     /// déjà ou si le lancement échoue (pipe/fork).
     bool start(const std::string& target);
 
@@ -63,5 +64,8 @@ private:
     OutputCallback on_output_;
     DoneCallback on_done_;
 };
+
+/// Découpe `target` en mots et les échappe pour le shell.
+[[nodiscard]] std::string bitbake_args(const std::string& target);
 
 } // namespace yocto

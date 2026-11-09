@@ -66,6 +66,8 @@ private:
     std::shared_ptr<tui::Button>  nographic_button_;
     std::shared_ptr<tui::Button>  graphical_button_;
     std::shared_ptr<tui::Button>  env_button_;
+    std::shared_ptr<tui::Button>  slirp_button_;
+    std::shared_ptr<tui::Button>  ssh_button_;
 
     std::function<void(const std::string&)> on_run_command_;
     std::function<void(const std::string&)> on_status_;

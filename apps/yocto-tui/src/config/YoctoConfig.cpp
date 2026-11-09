@@ -60,6 +60,7 @@ std::string YoctoConfig::to_ini() const {
     o << "[git]\n";
     o << "user_name = " << git_user_name << "\n";
     o << "user_email = " << git_user_email << "\n";
+    o << project.to_ini();
     return o.str();
 }
 
@@ -76,6 +77,7 @@ YoctoConfig YoctoConfig::from_ini(const std::string& content, std::string& error
         if (line.empty() || line[0] == '#' || line[0] == ';') continue;
         if (line.front() == '[' && line.back() == ']') {
             section = line.substr(1, line.size() - 2);
+            if (ProjectSpec::owns_section(section)) cfg.project.begin_section(section);
             continue;
         }
         auto eq = line.find('=');
@@ -86,7 +88,9 @@ YoctoConfig YoctoConfig::from_ini(const std::string& content, std::string& error
         std::string key = trim(line.substr(0, eq));
         std::string val = trim(line.substr(eq + 1));
 
-        if (section == "general") {
+        if (ProjectSpec::owns_section(section)) {
+            cfg.project.set_value(section, key, val);
+        } else if (section == "general") {
             if (key == "name") cfg.name = val;
             else if (key == "workdir") cfg.workdir = val;
             else if (key == "poky_url") cfg.poky_url = val;

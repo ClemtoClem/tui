@@ -73,7 +73,9 @@ ShellResult run_shell(const std::string& cmd, std::function<void(const std::stri
 }
 
 ShellResult run_shell_root(const std::string& cmd, std::function<void(const std::string&)> on_line) {
-    return run_shell_impl("sudo -n " + cmd, std::move(on_line));
+    // sh -c : toute la commande (y compris « a && b ») s'exécute en root,
+    // pas seulement son premier maillon.
+    return run_shell_impl("sudo -n sh -c " + shell_quote(cmd), std::move(on_line));
 }
 
 bool sudo_is_ready() {

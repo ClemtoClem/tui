@@ -508,6 +508,7 @@ void SetupPanel::append_log(const std::string& line) {
         if (cut != std::string::npos) log_buffer_.erase(0, cut + 1);
     }
     log_view_->set_text(log_buffer_);
+    log_view_->scroll_to_end();
 }
 
 } // namespace yocto

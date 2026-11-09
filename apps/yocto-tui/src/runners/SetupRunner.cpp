@@ -68,8 +68,12 @@ void SetupRunner::emit_status(StepId id, StepStatus s, const std::string& msg) {
 
 bool SetupRunner::exec(const std::string& cmd, bool root, std::string& err_out) {
     log("$ " + (root ? std::string("sudo -n ") : std::string()) + cmd);
-    auto result = root ? run_shell_root(cmd, [this](const std::string& l) { log("  " + l); })
-                       : run_shell(cmd,      [this](const std::string& l) { log("  " + l); });
+    // stdin fermé et stderr fusionné : une invite ne peut pas lire le
+    // clavier du TUI, et la progression (git clone...) ne s'écrit pas
+    // par-dessus l'interface.
+    const std::string full = cmd + " </dev/null 2>&1";
+    auto result = root ? run_shell_root(full, [this](const std::string& l) { log("  " + l); })
+                       : run_shell(full,      [this](const std::string& l) { log("  " + l); });
     if (result.exit_code != 0) {
         err_out = "commande échouée (code " + std::to_string(result.exit_code) + ") : " + cmd;
         // Les dernières lignes aident au diagnostic

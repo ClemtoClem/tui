@@ -1,6 +1,8 @@
 /* example/yocto-tui/config/YoctoConfig.hpp */
 #pragma once
 
+#include "../project/ProjectSpec.hpp"
+
 #include <filesystem>
 #include <string>
 
@@ -34,6 +36,10 @@ struct YoctoConfig {
     // [git]
     std::string git_user_name  = "Stagiaire Yocto";
     std::string git_user_email = "stagiaire@example.com";
+
+    // [project], [image], [app]... : layer personnel, applications
+    // custom et configuration Linux de la cible (voir ProjectSpec).
+    ProjectSpec project;
 
     // --- Sérialisation ---
     [[nodiscard]] std::string to_ini() const;

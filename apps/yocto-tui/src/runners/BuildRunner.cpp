@@ -8,8 +8,20 @@
 #include <unistd.h>
 
 #include <csignal>
+#include <sstream>
+#include <vector>
 
 namespace yocto {
+
+std::string bitbake_args(const std::string& target) {
+    // « formation-image -c populate_sdk » : chaque mot est un argument,
+    // échappé séparément (aucune injection shell possible).
+    std::istringstream in(target);
+    std::vector<std::string> tokens;
+    std::string t;
+    while (in >> t) tokens.push_back(t);
+    return build_command(tokens);
+}
 
 BuildRunner::BuildRunner(YoctoConfig config) : config_(std::move(config)) {
     config_.apply_defaults();
@@ -54,7 +66,7 @@ bool BuildRunner::start(const std::string& target) {
     const std::string cmd =
         "cd " + shell_quote(poky) + " && "
         "source oe-init-build-env " + shell_quote(bdir) + " >/dev/null && "
-        "exec bitbake " + shell_quote(target);
+        "exec bitbake " + bitbake_args(target);
 
     int fds[2];
     if (pipe(fds) != 0) {

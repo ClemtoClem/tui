@@ -34,6 +34,10 @@ public:
     [[nodiscard]] const YoctoConfig& current_config() const { return current_; }
     [[nodiscard]] bool has_config() const { return has_config_; }
 
+    /// Projet édité dans l'onglet « Projet » : conservé pour que
+    /// « Enregistrer » ici n'écrase pas les modifications faites là-bas.
+    void set_project(const ProjectSpec& project) { current_.project = project; }
+
     /// Recharge la liste des configs et sélectionne `name` si non vide.
     void reload(const std::string& name = "");
 

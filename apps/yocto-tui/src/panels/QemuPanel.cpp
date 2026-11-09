@@ -88,10 +88,30 @@ void QemuPanel::build_ui() {
     row1->add_child(nographic_button_, LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
     row1->add_child(graphical_button_, LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
 
-    auto row2 = std::make_shared<Horizontal>();
-    row2->add_child(env_button_, LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
+    // slirp : réseau utilisateur, sans sudo ni interface tap ; runqemu
+    // redirige le port 2222 de l'hôte vers le port 22 de la cible.
+    slirp_button_ = std::make_shared<Button>("nographic + slirp (SSH)");
+    slirp_button_->set_on_click([this] {
+        if (on_run_command_) on_run_command_(qemu_command("nographic slirp"));
+    });
 
-    auto hint1 = std::make_shared<Label>("Connexion : root, sans mot de passe.");
+    ssh_button_ = std::make_shared<Button>("SSH vers la cible");
+    ssh_button_->set_on_click([this] {
+        const std::string user = config_.project.image.users.empty() ? "root" : config_.project.image.users.front().name;
+        if (on_run_command_) {
+            on_run_command_("ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null " +
+                            user + "@127.0.0.1");
+        }
+    });
+
+    auto row2 = std::make_shared<Horizontal>();
+    row2->add_child(slirp_button_, LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
+    row2->add_child(ssh_button_, LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
+
+    auto row3 = std::make_shared<Horizontal>();
+    row3->add_child(env_button_, LayoutParams{tui::LayoutMode::Auto, 0, tui::CrossAlign::Start});
+
+    auto hint1 = std::make_shared<Label>("SSH : lancez d'abord QEMU avec slirp (port 2222).");
     hint1->set_foreground(kMuted);
     hint1->set_wrap(true);
     auto hint2 = std::make_shared<Label>("nographic : quitter QEMU avec Ctrl+A puis x.");
@@ -107,6 +127,7 @@ void QemuPanel::build_ui() {
     content->add_child(deploy_label_, LayoutParams::fixed(2));
     content->add_child(row1, LayoutParams::fixed(1));
     content->add_child(row2, LayoutParams::fixed(1));
+    content->add_child(row3, LayoutParams::fixed(1));
     content->add_child(std::make_shared<Label>(""), LayoutParams::fixed(1));
     content->add_child(lbl("Fichiers déployés :"), LayoutParams::fixed(1));
     content->add_child(file_list_, LayoutParams::stretch(1));
@@ -133,8 +154,22 @@ std::string QemuPanel::qemu_command(const std::string& mode) const {
     // L'environnement (MACHINE, chemins) vient de local.conf.
     std::string cmd = "cd " + shell_quote(config_.poky_dir().string()) +
                       " && source oe-init-build-env " + shell_quote(config_.build_dir_path().string());
-    if (!mode.empty()) cmd += " && runqemu " + mode;
-    return cmd;
+    if (mode.empty()) return cmd;
+    // Image du projet si elle a été produite, sinon runqemu choisit.
+    std::string image;
+    const auto& name = config_.project.image.name;
+    std::error_code ec;
+    const auto deploy = config_.build_dir_path() / "tmp" / "deploy" / "images" / config_.machine;
+    if (!name.empty() && std::filesystem::exists(deploy, ec)) {
+        for (const auto& e : std::filesystem::directory_iterator(deploy, ec)) {
+            const std::string f = e.path().filename().string();
+            if (f.rfind(name + "-", 0) == 0 && f.find(".qemuboot.conf") != std::string::npos) {
+                image = " " + shell_quote(name);
+                break;
+            }
+        }
+    }
+    return cmd + " && runqemu " + shell_quote(config_.machine) + image + " " + mode;
 }
 
 ImageStatus QemuPanel::detect() const {
@@ -145,7 +180,7 @@ ImageStatus QemuPanel::detect() const {
     st.deploy_dir = deploy;
 
     if (!std::filesystem::exists(deploy, ec)) {
-        st.message = "Aucune image : préparez le lab (onglet 1) puis lancez un build (onglet 2).";
+        st.message = "Aucune image : préparez le lab (F1), appliquez le projet (F3) puis lancez un build (F4).";
         return st;
     }
 
@@ -178,7 +213,7 @@ ImageStatus QemuPanel::detect() const {
         st.files.emplace_back(name, static_cast<std::size_t>(size));
     }
     if (st.files.empty()) {
-        st.message = "Répertoire de déploiement vide : lancez un build (onglet 2).";
+        st.message = "Répertoire de déploiement vide : lancez un build (F4).";
     }
     return st;
 }
