@@ -269,6 +269,14 @@ private:
         return t.type == "shared" || (t.type == "static" && p_.static_pic);
     }
 
+    /// ccache en tête de commande : accélère la recompilation des fichiers
+    /// inchangés (même à travers un changement de mode ou de toolchain).
+    bool use_ccache(const toolchain::Tool& tool) const {
+        if (!p_.ccache) return false;
+        if (tool.family != toolchain::Family::Gcc && tool.family != toolchain::Family::Clang) return false;
+        return util::have("ccache");
+    }
+
     std::vector<std::string> gtest_flags(const char* what) const {
         std::vector<std::string> r;
         auto q = proc::capture({t_.pkg_config, what, "gtest_main", "gtest"});
@@ -281,7 +289,9 @@ private:
         const TargetConfig& t = *tp.cfg;
         const auto& tool = lang == Lang::C ? t_.c_tool() : t_.cxx_tool();
         Family fam = tool.family;
-        std::vector<std::string> c = {tool.exe};
+        std::vector<std::string> c;
+        if (lang != Lang::ASM && use_ccache(tool)) c.push_back("ccache");
+        c.push_back(tool.exe);
         c.insert(c.end(), tool.pre_args.begin(), tool.pre_args.end());
         if (lang == Lang::CXX) {
             if (auto s = toolchain::std_flag(fam, t.cxx_standard.empty() ? p_.cxx_standard : t.cxx_standard); !s.empty())

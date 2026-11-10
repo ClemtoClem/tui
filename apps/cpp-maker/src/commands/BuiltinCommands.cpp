@@ -11,6 +11,7 @@
 #include "commands/GitCommands.hpp"
 #include "commands/GlobalContext.hpp"
 #include "commands/ProjectCommands.hpp"
+#include "commands/ReviewCommands.hpp"
 #include "commands/ToolCommands.hpp"
 
 namespace commands {
@@ -44,6 +45,7 @@ void RegisterBuiltinCommands(GlobalContext& g) {
     g.Register(std::make_shared<ToolchainGroup>());
     g.Register(std::make_shared<GitGroup>());
     g.Register(std::make_shared<DoctorCommand>());
+    g.Register(std::make_shared<ReviewCommand>());
     g.Register(std::make_shared<TuiCommand>());
     g.Register(std::make_shared<HelpCommand>());
     g.Register(std::make_shared<VersionCommand>());

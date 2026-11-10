@@ -38,27 +38,27 @@ ThemeSpec make(const char* name, bool dark, const char* primary, const char* sec
 
 std::vector<ThemeSpec> build_builtins() {
     std::vector<ThemeSpec> v;
-    //            nom                  sombre primary    secondary  accent     warning    error      success    foreground background surface    panel
-    v.push_back(make("textual-dark", true, "#0178D4", "#004578", "#ffa62b", "#ffa62b", "#ba3c5b", "#4EBF71", "#e0e0e0", nullptr, nullptr, nullptr));
-    v.push_back(make("textual-light", false, "#004578", "#0178D4", "#ffa62b", "#ffa62b", "#ba3c5b", "#4EBF71", nullptr, "#E0E0E0", "#D8D8D8", "#D0D0D0"));
-    v.push_back(make("nord", true, "#88C0D0", "#81A1C1", "#B48EAD", "#EBCB8B", "#BF616A", "#A3BE8C", "#D8DEE9", "#2E3440", "#3B4252", "#434C5E"));
-    v.push_back(make("gruvbox", true, "#85A598", "#A89A85", "#fabd2f", "#fe8019", "#fb4934", "#b8bb26", "#fbf1c7", "#282828", "#3c3836", "#504945"));
-    v.push_back(make("catppuccin-mocha", true, "#F5C2E7", "#cba6f7", "#fab387", "#FAE3B0", "#F28FAD", "#ABE9B3", "#cdd6f4", "#181825", "#313244", "#45475a"));
-    v.push_back(make("catppuccin-macchiato", true, "#C6A0F6", "#F5A97F", "#F5BDE6", "#EED49F", "#ED8796", "#A6DA95", "#CAD3F5", "#24273A", "#363A4F", "#494D64"));
-    v.push_back(make("catppuccin-frappe", true, "#CA9EE6", "#EF9F76", "#F4B8E4", "#E5C890", "#E78284", "#A6D189", "#C6D0F5", "#303446", "#414559", "#51576D"));
-    v.push_back(make("catppuccin-latte", false, "#8839EF", "#DC8A78", "#FE640B", "#DF8E1D", "#D20F39", "#40A02B", "#4C4F69", "#EFF1F5", "#E6E9EF", "#CCD0DA"));
-    v.push_back(make("dracula", true, "#BD93F9", "#6272A4", "#FF79C6", "#FFB86C", "#FF5555", "#50FA7B", "#F8F8F2", "#282A36", "#2B2E3B", "#313442"));
-    v.push_back(make("tokyo-night", true, "#BB9AF7", "#7AA2F7", "#FF9E64", "#E0AF68", "#F7768E", "#9ECE6A", "#a9b1d6", "#1A1B26", "#24283B", "#414868"));
-    v.push_back(make("monokai", true, "#AE81FF", "#F92672", "#66D9EF", "#FD971F", "#F92672", "#A6E22E", "#d6d6d6", "#272822", "#2e2e2e", "#3E3D32"));
-    v.push_back(make("flexoki", true, "#205EA6", "#24837B", "#9B76C8", "#AD8301", "#AF3029", "#66800B", "#FFFCF0", "#100F0F", "#1C1B1A", "#282726"));
-    v.push_back(make("solarized-dark", true, "#268bd2", "#2aa198", "#6c71c4", "#cb4b16", "#dc322f", "#859900", "#839496", "#002b36", "#073642", "#073642"));
-    v.push_back(make("solarized-light", false, "#268bd2", "#2aa198", "#6c71c4", "#cb4b16", "#dc322f", "#859900", "#586e75", "#fdf6e3", "#eee8d5", "#eee8d5"));
-    v.push_back(make("rose-pine", true, "#c4a7e7", "#31748f", "#ebbcba", "#f6c177", "#eb6f92", "#9ccfd8", "#e0def4", "#191724", "#1f1d2e", "#26233a"));
-    v.push_back(make("rose-pine-moon", true, "#c4a7e7", "#3e8fb0", "#ea9a97", "#f6c177", "#eb6f92", "#9ccfd8", "#e0def4", "#232136", "#2a273f", "#393552"));
-    v.push_back(make("rose-pine-dawn", false, "#907aa9", "#286983", "#d7827e", "#ea9d34", "#b4637a", "#56949f", "#575279", "#faf4ed", "#fffaf3", "#f2e9e1"));
-    v.push_back(make("atom-one-dark", true, "#61AFEF", "#C678DD", "#A378C2", "#DEB25B", "#F06262", "#62F062", "#ABB2BF", "#282C34", "#3B414D", "#4F5666"));
-    v.push_back(make("atom-one-light", false, "#4078F2", "#A626A4", "#bf9232", "#D8D938", "#F23F3F", "#6CF23F", "#383A42", "#FAFAFA", "#E0E0E0", "#CCCCCC"));
-    v.push_back(make("planor", true, "#5C54E0", "#7C6FF0", "#D957BE", "#E0B45A", "#E05A5A", "#6EC88C", "#E1E1E8", "#0D0C12", "#16141F", "#1F1C2C"));
+    //            nom                        sombre | primary    | secondary  | accent     | warning    | error      | success    | foreground | background | surface    | panel
+    v.push_back(make("textual-dark",         true,    "#0178D4", "#004578", "#ffa62b", "#ffa62b", "#ba3c5b", "#4EBF71", "#e0e0e0", nullptr,     nullptr,     nullptr));
+    v.push_back(make("textual-light",        false,   "#004578", "#0178D4", "#ffa62b", "#ffa62b", "#ba3c5b", "#4EBF71", nullptr,     "#E0E0E0", "#D8D8D8", "#D0D0D0"));
+    v.push_back(make("nord",                 true,    "#88C0D0", "#81A1C1", "#B48EAD", "#EBCB8B", "#BF616A", "#A3BE8C", "#D8DEE9", "#2E3440", "#3B4252", "#434C5E"));
+    v.push_back(make("gruvbox",              true,    "#85A598", "#A89A85", "#fabd2f", "#fe8019", "#fb4934", "#b8bb26", "#fbf1c7", "#282828", "#3c3836", "#504945"));
+    v.push_back(make("catppuccin-mocha",     true,    "#F5C2E7", "#cba6f7", "#fab387", "#FAE3B0", "#F28FAD", "#ABE9B3", "#cdd6f4", "#181825", "#313244", "#45475a"));
+    v.push_back(make("catppuccin-macchiato", true,    "#C6A0F6", "#F5A97F", "#F5BDE6", "#EED49F", "#ED8796", "#A6DA95", "#CAD3F5", "#24273A", "#363A4F", "#494D64"));
+    v.push_back(make("catppuccin-frappe",    true,    "#CA9EE6", "#EF9F76", "#F4B8E4", "#E5C890", "#E78284", "#A6D189", "#C6D0F5", "#303446", "#414559", "#51576D"));
+    v.push_back(make("catppuccin-latte",     false,   "#8839EF", "#DC8A78", "#FE640B", "#DF8E1D", "#D20F39", "#40A02B", "#4C4F69", "#EFF1F5", "#E6E9EF", "#CCD0DA"));
+    v.push_back(make("dracula",              true,    "#BD93F9", "#6272A4", "#FF79C6", "#FFB86C", "#FF5555", "#50FA7B", "#F8F8F2", "#282A36", "#2B2E3B", "#313442"));
+    v.push_back(make("tokyo-night",          true,    "#BB9AF7", "#7AA2F7", "#FF9E64", "#E0AF68", "#F7768E", "#9ECE6A", "#a9b1d6", "#1A1B26", "#24283B", "#414868"));
+    v.push_back(make("monokai",              true,    "#AE81FF", "#F92672", "#66D9EF", "#FD971F", "#F92672", "#A6E22E", "#d6d6d6", "#272822", "#2e2e2e", "#3E3D32"));
+    v.push_back(make("flexoki",              true,    "#205EA6", "#24837B", "#9B76C8", "#AD8301", "#AF3029", "#66800B", "#FFFCF0", "#100F0F", "#1C1B1A", "#282726"));
+    v.push_back(make("solarized-dark",       true,    "#268bd2", "#2aa198", "#6c71c4", "#cb4b16", "#dc322f", "#859900", "#839496", "#002b36", "#073642", "#073642"));
+    v.push_back(make("solarized-light",      false,   "#268bd2", "#2aa198", "#6c71c4", "#cb4b16", "#dc322f", "#859900", "#586e75", "#fdf6e3", "#eee8d5", "#eee8d5"));
+    v.push_back(make("rose-pine",            true,    "#c4a7e7", "#31748f", "#ebbcba", "#f6c177", "#eb6f92", "#9ccfd8", "#e0def4", "#191724", "#1f1d2e", "#26233a"));
+    v.push_back(make("rose-pine-moon",       true,    "#c4a7e7", "#3e8fb0", "#ea9a97", "#f6c177", "#eb6f92", "#9ccfd8", "#e0def4", "#232136", "#2a273f", "#393552"));
+    v.push_back(make("rose-pine-dawn",       false,   "#907aa9", "#286983", "#d7827e", "#ea9d34", "#b4637a", "#56949f", "#575279", "#faf4ed", "#fffaf3", "#f2e9e1"));
+    v.push_back(make("atom-one-dark",        true,    "#61AFEF", "#C678DD", "#A378C2", "#DEB25B", "#F06262", "#62F062", "#ABB2BF", "#282C34", "#3B414D", "#4F5666"));
+    v.push_back(make("atom-one-light",       false,   "#4078F2", "#A626A4", "#bf9232", "#D8D938", "#F23F3F", "#6CF23F", "#383A42", "#FAFAFA", "#E0E0E0", "#CCCCCC"));
+    v.push_back(make("planor",               true,    "#5C54E0", "#7C6FF0", "#D957BE", "#E0B45A", "#E05A5A", "#6EC88C", "#E1E1E8", "#0D0C12", "#16141F", "#1F1C2C"));
     return v;
 }
 

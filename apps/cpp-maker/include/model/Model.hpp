@@ -75,6 +75,18 @@ struct Flags {
     std::vector<std::string> defines, public_defines, cflags, cxxflags, ldflags, warnings;
 };
 
+/// État d'approbation d'une cible ([review] de module.toml / application.toml).
+/// Géré par « cpp-maker review » : une cible non approuvée peut être bloquée
+/// à la compilation quand [build].require_approval est actif.
+struct ReviewConfig {
+    std::string status = "none";   ///< none | requested | approved | rejected
+    std::string reviewer;          ///< qui a statué (approve/reject)
+    std::string date;              ///< date libre (AAAA-MM-JJ)
+    std::string notes;
+    [[nodiscard]] bool is_approved() const { return status == "approved"; }
+    [[nodiscard]] bool is_set() const { return status != "none"; }
+};
+
 /// Règle exécutée par le crochet git pre-commit ([git.pre_commit.<nom>]).
 /// Portée : tous les fichiers indexés (project.toml), ceux du layer
 /// (layer.toml) ou ceux de la cible (module.toml, application.toml).
@@ -139,6 +151,8 @@ struct TargetConfig {
     std::map<std::string, PlatformOverride> platforms;
 
     std::vector<PreCommitRule> pre_commit;
+
+    ReviewConfig review;
 
     // [run] (applications)
     std::vector<std::string> run_args;
@@ -219,6 +233,8 @@ struct ProjectConfig {
                                          "-Wconversion", "-Wsign-conversion", "-Wformat=2",
                                          "-Wundef", "-Wcast-align", "-Wnon-virtual-dtor"};
     bool static_pic = true;
+    bool require_approval = false;   ///< bloquer build/test/package tant qu'une cible n'est pas approuvée
+    bool ccache = true;              ///< utiliser ccache si présent dans le PATH
     std::vector<std::string> defines, cflags, cxxflags, ldflags;
     std::vector<ModeConfig> modes;
     std::map<std::string, ToolchainConfig> toolchains;

@@ -22,7 +22,8 @@ enum BuildOpt : unsigned {
     kOptClean = 1u << 5,      ///< --clean
     kOptTests = 1u << 6,      ///< --tests
     kOptBackend = 1u << 7,    ///< --backend
-    kOptAll = 0xffu,
+    kOptApproval = 1u << 8,   ///< --require-approval / --ignore-approval
+    kOptAll = 0x1ffu,
 };
 
 void add_build_options(args::Arguments& a, unsigned which);
@@ -33,5 +34,11 @@ build::Request read_request(Context& ctx, bool positional_targets = true);
 
 /// Cibles demandées (positionnels/-m) résolues ; vide = dossier courant ou tout.
 std::vector<std::string> selected_targets(Context& ctx, const build::Request& r);
+
+/// Bloque si l'approbation est requise et qu'une cible n'est pas approuvée.
+/// `required` : [build].require_approval ou --require-approval ; `ignore` :
+/// --ignore-approval. Lève util::Error en listant les cibles non approuvées.
+void enforce_approval(const model::Workspace& ws, const std::vector<std::string>& ids,
+                      bool required, bool ignore);
 
 } // namespace commands

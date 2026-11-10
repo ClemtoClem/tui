@@ -267,6 +267,41 @@ args = []            # arguments par défaut de « cpp-maker run »
                        q(o.name), q(o.description), q(language), list(o.deps));
 }
 
+// --- README -------------------------------------------------------------------
+
+std::string layer_readme(const LayerOptions& o) {
+    std::string desc = o.description.empty() ? std::string("Couche d'architecture du projet.") : o.description;
+    return std::format("# {0}\n\n{1}\n\nRegroupe des modules (bibliothèques C/C++) sous `libs/{0}/<module>/`.\n\n"
+                       "```sh\ncpp-maker add module {0} <nom>     # ajouter un module\n"
+                       "cpp-maker build {0}.*               # compiler tous ses modules\n"
+                       "cpp-maker test {0}.*                # exécuter leurs tests\n```\n",
+                       o.name, desc);
+}
+
+std::string module_readme(const ModuleOptions& o, const std::string& lang, const std::string& type) {
+    std::string desc = o.description.empty()
+                           ? std::format("Bibliothèque « {} » ({}), langage {}.", o.name, type, lang)
+                           : o.description;
+    std::string usage;
+    if (lang == "c") {
+        std::string id = util::identifier(o.name);
+        usage = std::format("```c\n#include \"{0}/{0}.h\"\n\n// {1}_add(2, 3) == 5\n```", o.name, id);
+    } else {
+        std::string ns = cxx_namespace(o.name, o.layer);
+        usage = std::format("```cpp\n#include \"{0}/{0}.hpp\"\n\n// {1}::greeting(\"monde\")\n```", o.name, ns);
+    }
+    return std::format("# {0}.{1}\n\n{2}\n\n## Utilisation\n\n{3}\n\n## Compilation et tests\n\n"
+                       "```sh\ncpp-maker build {0}.{1}\ncpp-maker test {0}.{1}\n```\n",
+                       o.layer, o.name, desc, usage);
+}
+
+std::string app_readme(const AppOptions& o, const std::string& lang) {
+    std::string desc = o.description.empty() ? std::format("Application exécutable (langage {}).", lang) : o.description;
+    return std::format("# {0}\n\n{1}\n\n```sh\ncpp-maker run {0}        # compiler et exécuter\n"
+                       "cpp-maker build {0}      # compiler seulement\n```\n",
+                       o.name, desc);
+}
+
 // --- Création ------------------------------------------------------------------
 
 fs::path create_project(const ProjectOptions& in) {
@@ -295,9 +330,17 @@ fs::path create_project(const ProjectOptions& in) {
     if (!fs::exists(root / ".gitignore", ec)) tx.create_file(root / ".gitignore", kGitignore);
     if (!fs::exists(root / "README.md", ec))
         tx.create_file(root / "README.md",
-                       std::format("# {0}\n\nProjet C/C++ géré par cpp-maker.\n\n```sh\ncpp-maker build        # compile (debug)\n"
-                                   "cpp-maker run          # compile et exécute\ncpp-maker test         # tests\n"
-                                   "cpp-maker tui          # interface interactive\n```\n", o.name));
+                       std::format("# {0}\n\nProjet C/C++ géré par cpp-maker.\n\n"
+                                   "## Arborescence\n\n```\n"
+                                   "libs/<layer>/<module>/     bibliothèques (module.toml)\n"
+                                   "apps/<application>/        exécutables (application.toml)\n"
+                                   "```\n\n"
+                                   "## Commandes\n\n```sh\n"
+                                   "cpp-maker build        # compile (debug)\n"
+                                   "cpp-maker run          # compile et exécute\n"
+                                   "cpp-maker test         # tests\n"
+                                   "cpp-maker tui          # interface interactive\n"
+                                   "```\n", o.name));
     auto ws = tx.commit(false);
     if (with_layer) {
         model::Transaction t2(root);
@@ -335,6 +378,7 @@ void add_layer(model::Transaction& tx, const model::Workspace& ws, const LayerOp
     if (fs::exists(dir, ec)) util::fail("le dossier {} existe déjà", util::display(dir, ws.root));
     tx.create_dir(dir);
     tx.create_file(dir / model::kLayerFile, layer_toml(o));
+    tx.create_file(dir / "README.md", layer_readme(o));
     // Ordre des couches explicite : le nouveau layer devient le plus haut.
     if (!ws.project.layer_order.empty()) {
         auto& d = tx.doc(ws.project.file);
@@ -369,6 +413,7 @@ void add_module(model::Transaction& tx, const model::Workspace& ws, const Module
     if (fs::exists(dir, ec)) util::fail("le dossier {} existe déjà", util::display(dir, ws.root));
     tx.create_dir(dir);
     tx.create_file(dir / model::kModuleFile, module_toml(o, lang));
+    tx.create_file(dir / "README.md", module_readme(o, lang, o.type));
     if (o.sources)
         for (auto& [p, content] : module_sources(o.name, o.layer, o.type, lang).list) tx.create_file(dir / p, content);
     else {
@@ -402,6 +447,7 @@ void add_app(model::Transaction& tx, const model::Workspace& ws, const AppOption
     if (fs::exists(dir, ec)) util::fail("le dossier {} existe déjà", util::display(dir, ws.root));
     tx.create_dir(dir);
     tx.create_file(dir / model::kApplicationFile, app_toml(o, lang));
+    tx.create_file(dir / "README.md", app_readme(o, lang));
     if (o.sources)
         for (auto& [p, content] : app_sources(o.name, lang, sample_uses(&ws, dep_ids)).list) tx.create_file(dir / p, content);
     else

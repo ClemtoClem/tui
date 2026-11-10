@@ -141,3 +141,16 @@ TEST_F(WorkspaceTest, CheminsChaineOuTableau) {
     bad.doc(ws.project.file).set({"paths"}, "dist", toml::Value(std::vector<std::string>{"a", "b"}));
     EXPECT_THROW((void)bad.commit(), util::Error);
 }
+
+TEST_F(WorkspaceTest, ReadmeCrees) {
+    auto exists = [&](const char* rel) {
+        std::error_code ec;
+        return fs::is_regular_file(root / rel, ec);
+    };
+    EXPECT_TRUE(exists("README.md"));                 // projet
+    EXPECT_TRUE(exists("libs/core/README.md"));       // layer
+    EXPECT_TRUE(exists("libs/core/demo/README.md"));  // module
+    EXPECT_TRUE(exists("libs/net/README.md"));
+    EXPECT_TRUE(exists("libs/net/http/README.md"));
+    EXPECT_TRUE(exists("apps/demo/README.md"));       // application
+}

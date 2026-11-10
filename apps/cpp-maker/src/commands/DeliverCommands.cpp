@@ -18,7 +18,7 @@ void default_release(const model::Workspace& ws, build::Request& r) {
 } // namespace
 
 void PackageCommand::ConfigureArgs(args::Arguments& a) {
-    add_build_options(a, kOptTargets | kOptToolchain | kOptJobs | kOptVerbose | kOptClean);
+    add_build_options(a, kOptTargets | kOptToolchain | kOptJobs | kOptVerbose | kOptClean | kOptApproval);
     a.add("--format").set_value(std::vector<std::string>{}).metavar("LISTE")
         .help("Formats : tar.gz, tar.xz, zip, deb, stage (défaut : [package].formats)");
     a.add("--no-strip").set_value(false).help("Ne pas alléger les binaires");
@@ -34,6 +34,7 @@ int PackageCommand::Run(Context& ctx) {
     for (auto& f : formats)
         if (!ok.count(f)) ctx.usage("format inconnu '" + f + "' (tar.gz|tar.xz|zip|deb|stage)");
     std::vector<std::string> ids = r.selectors.empty() ? ws.select({"all"}, ctx.cwd()) : ws.select(r.selectors, ctx.cwd());
+    enforce_approval(ws, ids, ws.project.require_approval || r.require_approval, r.ignore_approval);
     for (auto& tcn : build::pick_toolchains(ws, r)) {
         for (auto& mode : r.modes) {
             auto s = build::Session::open(ws, tcn, mode, ids, false, r);
@@ -50,7 +51,7 @@ int PackageCommand::Run(Context& ctx) {
 }
 
 void InstallCommand::ConfigureArgs(args::Arguments& a) {
-    add_build_options(a, kOptTargets | kOptToolchain | kOptJobs | kOptVerbose);
+    add_build_options(a, kOptTargets | kOptToolchain | kOptJobs | kOptVerbose | kOptApproval);
     a.add("--prefix").set_value(std::string("/usr/local")).metavar("CHEMIN").help("Préfixe d'installation");
     a.add("--destdir").set_value(std::string()).metavar("CHEMIN").help("Racine alternative (<destdir><prefix>)");
     a.add("--no-strip").set_value(false).help("Ne pas alléger les binaires");
@@ -67,6 +68,7 @@ int InstallCommand::Run(Context& ctx) {
     auto destdir = ctx.get<std::string>("--destdir");
     fs::path target = destdir.empty() ? prefix : fs::absolute(destdir) / prefix.relative_path();
     auto ids = r.selectors.empty() ? ws.select({"all"}, ctx.cwd()) : ws.select(r.selectors, ctx.cwd());
+    enforce_approval(ws, ids, ws.project.require_approval || r.require_approval, r.ignore_approval);
     auto s = build::Session::open(ws, tcs[0], r.modes[0], ids, false, r);
     if (s.build(r, "install") != 0) return 1;
     if (r.dry_run) return 0;
@@ -83,7 +85,7 @@ int InstallCommand::Run(Context& ctx) {
 }
 
 void DeployCommand::ConfigureArgs(args::Arguments& a) {
-    add_build_options(a, kOptJobs | kOptVerbose);
+    add_build_options(a, kOptJobs | kOptVerbose | kOptApproval);
 }
 
 int DeployCommand::Run(Context& ctx) {
@@ -116,7 +118,10 @@ int DeployCommand::Run(Context& ctx) {
     r.keep_going = ctx.flag("--keep-going");
     r.verbose = ctx.flag("--verbose");
     r.dry_run = ctx.flag("--dry-run");
+    r.require_approval = ctx.flag("--require-approval");
+    r.ignore_approval = ctx.flag("--ignore-approval");
     std::vector<std::string> ids = ws.select(d.targets.empty() ? std::vector<std::string>{"all"} : d.targets, ctx.cwd());
+    enforce_approval(ws, ids, ws.project.require_approval || r.require_approval, r.ignore_approval);
     std::string tc = d.toolchain.empty() ? ws.project.default_toolchain : d.toolchain;
     auto s = build::Session::open(ws, tc, d.mode, ids, false, r);
     build::Request br = r;

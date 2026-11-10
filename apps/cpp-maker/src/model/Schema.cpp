@@ -78,6 +78,15 @@ void add_git_rules(Spec& s, const std::string& scope) {
     s.fields.push_back({sec, "enabled", FT::Boolean, "Active", "", {}, "true"});
 }
 
+void add_review(Spec& s, const std::string& who) {
+    const std::string sec = "review";
+    s.sections.push_back({sec, "Approbation", "État de revue " + who + " (cpp-maker review status|approve|reject|request)."});
+    s.fields.push_back({sec, "status", FT::Enum, "État", "none, requested (revue demandée), approved ou rejected.", {"none", "requested", "approved", "rejected"}, "none"});
+    s.fields.push_back({sec, "reviewer", FT::String, "Reviseur", "Qui a approuvé ou rejeté.", {}, ""});
+    s.fields.push_back({sec, "date", FT::String, "Date", "Date de la décision (AAAA-MM-JJ).", {}, ""});
+    s.fields.push_back({sec, "notes", FT::String, "Notes", "Commentaire libre.", {}, ""});
+}
+
 void add_platform(Spec& s, const std::string& base) {
     std::string sec = base + ".*";
     s.sections.push_back({sec, "Plate-forme", "Surcharges par OS cible (linux, windows, macos, android, freebsd, baremetal, unix)."});
@@ -169,6 +178,8 @@ Spec make_project() {
     F("build", "warnings", FT::StringList, "Avertissements", "Options d'avertissement communes.", {},
       util::join(model::ProjectConfig{}.warnings, ", "));
     F("build", "static_pic", FT::Boolean, "PIC statique", "Compiler les bibliothèques statiques avec -fPIC.", {}, "true");
+    F("build", "require_approval", FT::Boolean, "Approbation requise", "Bloquer build/test/run/package/install/deploy des cibles non approuvées ([review].status != approved).", {}, "false");
+    F("build", "ccache", FT::Boolean, "ccache", "Accélérer la compilation via ccache s'il est installé.", {}, "true");
     F("build", "defines", FT::StringList, "Defines", "Macros communes.");
     F("build", "cflags", FT::StringList, "Options C", "");
     F("build", "cxxflags", FT::StringList, "Options C++", "");
@@ -280,6 +291,7 @@ Spec make_module() {
     F("module", "artifact", FT::String, "Nom de l'artefact", "lib<nom>.a (défaut : nom du module).");
     F("module", "install", FT::Boolean, "Installé", "Inclus par install/package.", {}, "true");
     add_target_common(s, false);
+    add_review(s, "du module");
     return s;
 }
 
@@ -304,6 +316,7 @@ Spec make_application() {
     F("run", "cwd", FT::String, "Répertoire", "Répertoire de travail (relatif à la racine).");
     F("run", "env", FT::Map, "Environnement", "Variables d'environnement.");
     add_target_common(s, true);
+    add_review(s, "de l'application");
     return s;
 }
 

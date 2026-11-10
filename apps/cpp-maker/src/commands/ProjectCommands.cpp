@@ -134,6 +134,23 @@ const model::LayerConfig& require_layer(const model::Workspace& ws, const std::s
     return *L;
 }
 
+/// Marqueur d'approbation affiché à côté du nom d'une cible (vide si non examinée).
+std::string review_mark(const model::TargetConfig& t) {
+    if (!t.review.is_set()) return "";
+    if (t.review.status == "approved") return term::green(" ✓");
+    if (t.review.status == "rejected") return term::red(" ✗");
+    return term::yellow(" ●");
+}
+
+std::string review_label(const model::TargetConfig& t) {
+    if (!t.review.is_set()) return "non examinée";
+    std::string s = t.review.status;
+    if (!t.review.reviewer.empty()) s += " · " + t.review.reviewer;
+    if (!t.review.date.empty()) s += " · " + t.review.date;
+    if (!t.review.notes.empty()) s += " — " + t.review.notes;
+    return s;
+}
+
 } // namespace
 
 // ============================================================================
@@ -575,8 +592,8 @@ int ListCommand::Run(Context& ctx) {
             auto mods = ws.modules_of(L.name);
             for (size_t i = 0; i < mods.size(); ++i) {
                 auto* m = mods[i];
-                term::outln("    {} {:<20} {:<12} {:<8} → {}", i + 1 == mods.size() ? "└─" : "├─", m->name, m->type,
-                            m->version, deps_of(*m));
+                term::outln("    {} {:<20} {:<12} {:<8} → {}{}", i + 1 == mods.size() ? "└─" : "├─", m->name, m->type,
+                            m->version, deps_of(*m), review_mark(*m));
             }
         }
     }
@@ -584,7 +601,7 @@ int ListCommand::Run(Context& ctx) {
         auto apps = ws.applications();
         term::outln("\n{}", term::bold(std::format("Applications ({})", apps.size())));
         if (apps.empty()) term::outln("  (aucune — cpp-maker add app <nom>)");
-        for (auto* a : apps) term::outln("  {:<24} {:<8} → {}", term::cyan(a->name), a->version, deps_of(*a));
+        for (auto* a : apps) term::outln("  {:<24} {:<8} → {}{}", term::cyan(a->name), a->version, deps_of(*a), review_mark(*a));
     }
     for (auto& w : ws.warnings) term::warn("{}", w);
     return 0;
@@ -611,6 +628,7 @@ void print_target(const model::Workspace& ws, const model::TargetConfig& t) {
     if (!t.is_header_only()) kv("artefact", t.artifact_base());
     kv("installé", t.install ? "oui" : "non");
     if (t.from_git) kv("origine", "dépendance git (lecture seule)");
+    if (t.review.is_set()) kv("revue", review_label(t));
     term::outln("\n  {}", term::bold("Sources"));
     kv("dossiers", list_or_dash(t.source_dirs));
     if (!t.source_files.empty()) kv("fichiers", util::join(t.source_files, ", "));
@@ -704,6 +722,8 @@ int InfoCommand::Run(Context& ctx) {
     kv("mode par défaut", p.default_mode);
     kv("toolchain par défaut", p.default_toolchain);
     kv("parallélisme", p.jobs == 0 ? "auto" : std::to_string(p.jobs));
+    if (p.ccache) kv("ccache", "automatique si disponible");
+    if (p.require_approval) kv("approbation", "requise pour build/test/package (cpp-maker review)");
     std::vector<std::string> modes;
     for (auto& m : p.modes) modes.push_back(m.builtin ? m.name : m.name + "*");
     kv("modes", util::join(modes, ", ") + "  (* = défini dans project.toml)");

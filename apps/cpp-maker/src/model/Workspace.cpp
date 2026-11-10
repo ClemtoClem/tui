@@ -140,6 +140,15 @@ void read_deps(const Reader& r, const toml::Value* t, Dependencies& d) {
     }
 }
 
+void read_review(const Reader& r, ReviewConfig& out) {
+    const toml::Value* t = r.table({"review"});
+    if (!t) return;
+    r.str(t, "status", out.status);
+    r.str(t, "reviewer", out.reviewer);
+    r.str(t, "date", out.date);
+    r.str(t, "notes", out.notes);
+}
+
 void read_rules(const Reader& r, std::vector<PreCommitRule>& out) {
     const toml::Value* t = r.table({"git", "pre_commit"});
     if (!t) return;
@@ -328,6 +337,8 @@ void Workspace::load_project_file() {
         r.integer(t, "jobs", p.jobs);
         r.list(t, "warnings", p.warnings);
         r.boolean(t, "static_pic", p.static_pic);
+        r.boolean(t, "require_approval", p.require_approval);
+        r.boolean(t, "ccache", p.ccache);
         r.list(t, "defines", p.defines);
         r.list(t, "cflags", p.cflags);
         r.list(t, "cxxflags", p.cxxflags);
@@ -517,6 +528,7 @@ TargetConfig read_target(const fs::path& root, const fs::path& dir, Kind kind, c
     }
     read_platforms(r, r.table({"platform"}), t.platforms);
     read_rules(r, t.pre_commit);
+    read_review(r, t.review);
     if (auto* s = r.table({"run"})) {
         r.list(s, "args", t.run_args);
         r.str(s, "cwd", t.run_cwd);
@@ -975,6 +987,9 @@ std::vector<std::string> Workspace::validate() const {
         if (!t.test_framework.empty() && t.test_framework != "builtin" && t.test_framework != "gtest" &&
             t.test_framework != "none")
             E(std::format("{}: tests.framework invalide '{}'", f, t.test_framework));
+        static const std::set<std::string> review_status = {"none", "requested", "approved", "rejected"};
+        if (!review_status.count(t.review.status))
+            E(std::format("{}: review.status invalide '{}' (none|requested|approved|rejected)", f, t.review.status));
         for (auto& [os, o] : t.platforms) {
             (void)o;
             if (!plat.count(os)) E(std::format("{}: plate-forme inconnue [platform.{}]", f, os));

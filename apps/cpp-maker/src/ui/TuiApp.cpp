@@ -99,12 +99,20 @@ std::shared_ptr<tui::Button> button(const std::string& text, std::function<void(
 
 /// Variante de bouton déduite du libellé d'une action.
 std::string variant_for(const std::string& text) {
-    if (text.starts_with("+ ") || text.starts_with("Créer")) return "-success";
-    if (text.starts_with("Supprimer") || text.starts_with("Retirer")) return "-error";
+    if (text.starts_with("+ ") || text.starts_with("Créer") || text.starts_with("Approuver")) return "-success";
+    if (text.starts_with("Supprimer") || text.starts_with("Retirer") || text.starts_with("Rejeter")) return "-error";
     if (text.starts_with("Compiler") || text.starts_with("Exécuter") || text.starts_with("Valider") ||
-        text.starts_with("Déployer"))
+        text.starts_with("Déployer") || text.starts_with("Demander"))
         return "-primary";
     return {};
+}
+
+/// Marqueur d'approbation affiché dans l'arbre à côté du nom d'une cible.
+std::string review_suffix(const model::TargetConfig& t) {
+    if (!t.review.is_set()) return "";
+    if (t.review.status == "approved") return "  ✓";
+    if (t.review.status == "rejected") return "  ✗";
+    return "  ●";
 }
 
 /// Feuille de style de l'interface (par-dessus la feuille par défaut de libtui).
@@ -220,6 +228,12 @@ std::string signature_of(const std::vector<fs::path>& files) {
 std::string first_line(const std::string& s) {
     auto t = util::trim(term::strip_ansi(s));
     return t.substr(0, t.find('\n'));
+}
+
+/// Fichier de configuration TOML (réécrit via une transaction revalidée) ?
+bool is_config_file(const fs::path& f) {
+    auto n = f.filename().string();
+    return n == model::kProjectFile || n == model::kLayerFile || n == model::kModuleFile || n == model::kApplicationFile;
 }
 
 // ============================================================================
@@ -491,7 +505,7 @@ private:
         auto v = std::make_shared<tui::Vertical>();
         v->add_child(editor_title_, LayoutParams::fixed(1));
         v->add_child(editor_, LayoutParams::stretch(1));
-        v->add_child(label("Ctrl+S : valider puis enregistrer (le fichier n'est écrit que si tout le projet reste valide) · "
+        v->add_child(label("Ctrl+S : enregistrer (un fichier TOML n'est écrit que si tout le projet reste valide) · "
                            "Ctrl+Z (hors éditeur) : recharger le fichier", Tone::Muted),
                      LayoutParams::fixed(1));
         toml_page_ = v;
@@ -637,6 +651,7 @@ private:
         auto& ws = *ws_;
         auto& p = ws.project;
         items.push_back({"project", "◆ " + p.name, 0, Tone::Accent, p.version});
+        items.push_back({"readme:project", "README.md", 1, Tone::Muted, ""});
         items.push_back({"project:build", "Compilation", 1, Tone::Normal, ""});
         items.push_back({"project:tests", "Tests", 1, Tone::Normal, ""});
         items.push_back({"project:package", "Paquets", 1, Tone::Normal, ""});
@@ -673,11 +688,24 @@ private:
         for (auto& L : ws.layers) {
             int r = ws.layer_rank(L.name);
             items.push_back({"layer:" + L.name, "▸ " + L.name, 1, Tone::Info, r >= 0 ? std::format("couche {}", r) : ""});
-            for (auto* m : ws.modules_of(L.name)) items.push_back({"module:" + m->id, m->name, 2, Tone::Normal, m->type});
+            items.push_back({"readme:layer:" + L.name, "README.md", 2, Tone::Muted, ""});
+            for (auto* m : ws.modules_of(L.name)) {
+                auto tone = m->review.status == "approved" ? Tone::Success
+                            : m->review.status == "rejected" ? Tone::Error
+                            : m->review.status == "requested" ? Tone::Warning : Tone::Normal;
+                items.push_back({"module:" + m->id, m->name + review_suffix(*m), 2, tone, m->type});
+                if (!m->from_git) items.push_back({"readme:module:" + m->id, "README.md", 3, Tone::Muted, ""});
+            }
         }
         auto apps = ws.applications();
         items.push_back({"group:apps", "Applications", 0, Tone::Accent, std::to_string(apps.size())});
-        for (auto* a : apps) items.push_back({"app:" + a->id, a->name, 1, Tone::Normal, ""});
+        for (auto* a : apps) {
+            auto tone = a->review.status == "approved" ? Tone::Success
+                        : a->review.status == "rejected" ? Tone::Error
+                        : a->review.status == "requested" ? Tone::Warning : Tone::Normal;
+            items.push_back({"app:" + a->id, a->name + review_suffix(*a), 1, tone, ""});
+            items.push_back({"readme:app:" + a->id, "README.md", 2, Tone::Muted, ""});
+        }
         nav_->set_items(items);
     }
 
@@ -778,6 +806,28 @@ private:
         auto P = schema::FileKind::Project;
         auto key = id.substr(id.find(':') + 1);
         auto run_btn = [this](const std::string& cmd) { return [this, cmd] { run_in_terminal(cmd, false); }; };
+
+        if (id.starts_with("readme:")) {
+            fs::path file;
+            std::string rest = id.substr(7);
+            if (rest == "project") file = root_ / "README.md";
+            else if (rest.starts_with("layer:")) {
+                if (auto* L = ws.find_layer(rest.substr(6))) file = ws.root / L->dir / "README.md";
+            } else if (rest.starts_with("module:")) {
+                if (auto* t = ws.find(rest.substr(7)); t && !t->from_git) file = ws.abs(*t) / "README.md";
+            } else if (rest.starts_with("app:")) {
+                if (auto* t = ws.find(rest.substr(4)); t) file = ws.abs(*t) / "README.md";
+            }
+            if (file.empty()) return clear_form();
+            std::error_code ec;
+            title_->set_text("README.md");
+            desc_->set_text(util::display(file, root_) + (fs::exists(file, ec) ? "" : "  (nouveau)"));
+            set_tone(*desc_, Tone::Muted);
+            set_actions({{"Éditer (F3)", [this] { switch_tab(kTabToml); }}});
+            clear_form("README de cet élément — éditez-le dans l'onglet « Fichier TOML » (F3), puis Ctrl+S pour enregistrer.");
+            open_in_editor(file);
+            return;
+        }
 
         if (id == "project") {
             title_->set_text("Projet " + p.name);
@@ -902,20 +952,30 @@ private:
             title_->set_text((app ? "Application " : "Module ") + t->id);
             std::string deps = t->dep_ids.empty() ? "aucune dépendance" : "dépend de " + util::join(t->dep_ids, ", ");
             auto users = ws.dependents(t->id);
-            desc_->set_text(std::format("{} · {}{}", util::display(ws.abs(*t), root_), deps,
-                                        users.empty() ? "" : " · utilisé par " + util::join(users, ", ")));
+            std::string rev;
+            if (t->review.is_set()) {
+                rev = " · revue : " + t->review.status;
+                if (!t->review.reviewer.empty()) rev += " par " + t->review.reviewer;
+                if (!t->review.date.empty()) rev += " (" + t->review.date + ")";
+            }
+            desc_->set_text(std::format("{} · {}{}{}", util::display(ws.abs(*t), root_), deps,
+                                        users.empty() ? "" : " · utilisé par " + util::join(users, ", "), rev));
             std::vector<std::pair<std::string, std::function<void()>>> acts = {
                 {"Compiler", [this, key] { run_in_terminal("build " + key, true); }},
                 {"Tester", [this, key] { run_in_terminal("test " + key, true); }}};
             if (app) acts.push_back({"Exécuter", [this, key] { run_in_terminal("run " + key, true); }});
             acts.push_back({"Infos", [this, key] { run_in_terminal("info " + key, false); }});
+            std::string sel = (app ? "app:" : "module:") + key;
+            acts.push_back({"Approuver", [this, key, sel] { run_self({"review", "approve", key}, sel); }});
+            acts.push_back({"Rejeter", [this, key, sel] { run_self({"review", "reject", key}, sel); }});
+            acts.push_back({"Demander revue", [this, key, sel] { run_self({"review", "request", key}, sel); }});
             acts.push_back({"Renommer", [this, key, app] { rename(app ? "app" : "module", key); }});
             acts.push_back({"Supprimer", [this, key, app] { remove(app ? "app" : "module", key); }});
             set_actions(acts);
             std::vector<FormSection> secs;
             if (app) secs = {{{"application"}, "application", ""}, {{"run"}, "run", ""}};
             else secs = {{{"module"}, "module", ""}};
-            for (auto s : {"dependencies", "sources", "include", "flags", "tests"}) secs.push_back({{s}, s, ""});
+            for (auto s : {"dependencies", "sources", "include", "flags", "tests", "review"}) secs.push_back({{s}, s, ""});
             set_form(app ? schema::FileKind::Application : schema::FileKind::Module, t->file, secs,
                      {"module.name", "application.name"});
             open_in_editor(t->file);
@@ -992,7 +1052,7 @@ private:
         while (editor_->tab_count() > 0) editor_->close_tab(0);
         std::string text;
         util::read_file(file, text);
-        editor_->add_tab(util::display(file, root_), "toml", text);
+        editor_->add_tab(util::display(file, root_), tui::detect_language(file.filename().string()), text);
         editor_file_ = file;
         editor_open_ = true;
         editor_title_->set_text("Fichier : " + util::display(file, root_) + (fs::exists(file) ? "" : "  (nouveau)"));
@@ -1002,6 +1062,13 @@ private:
     void save_editor() {
         if (!editor_open_ || editor_->tab_count() == 0) return;
         std::string text = editor_->editor_at(0)->text();
+        if (!is_config_file(editor_file_)) {
+            // Fichier libre (README.md…) : écriture directe, sans validation TOML.
+            util::write_file(editor_file_, text);
+            editor_->mark_saved(0);
+            set_status("✓ " + util::display(editor_file_, root_) + " enregistré", Tone::Success);
+            return;
+        }
         try {
             model::Transaction tx(root_);
             tx.doc(editor_file_).replace_text(text);

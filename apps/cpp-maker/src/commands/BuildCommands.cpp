@@ -28,6 +28,7 @@ int BuildCommand::Run(Context& ctx) {
     auto& ws = ctx.workspace();
     auto r = read_request(ctx);
     auto ids = selected_targets(ctx, r);
+    enforce_approval(ws, ids, ws.project.require_approval || r.require_approval, r.ignore_approval);
     int rc = 0;
     for (auto& tcn : build::pick_toolchains(ws, r)) {
         auto probe = toolchain::resolve(ws.project, tcn, r.cc, r.cxx);
@@ -58,7 +59,7 @@ int BuildCommand::Run(Context& ctx) {
 // ============================================================================
 
 void RunCommand::ConfigureArgs(args::Arguments& a) {
-    add_build_options(a, kOptToolchain | kOptJobs | kOptVerbose | kOptSanitize | kOptClean);
+    add_build_options(a, kOptToolchain | kOptJobs | kOptVerbose | kOptSanitize | kOptClean | kOptApproval);
 }
 
 int RunCommand::Run(Context& ctx) {
@@ -90,6 +91,7 @@ int RunCommand::Run(Context& ctx) {
             app = apps[0]->id;
         }
     }
+    enforce_approval(ws, {app}, ws.project.require_approval || r.require_approval, r.ignore_approval);
     auto s = build::Session::open(ws, tcs[0], modes[0], {app}, false, r);
     if (s.build(r, "run") != 0) return 1;
     if (r.dry_run) return 0;
@@ -151,6 +153,7 @@ int TestCommand::Run(Context& ctx) {
     auto& ws = ctx.workspace();
     auto r = read_request(ctx);
     auto ids = selected_targets(ctx, r);
+    enforce_approval(ws, ids, ws.project.require_approval || r.require_approval, r.ignore_approval);
     auto o = read_test_options(ctx);
     std::vector<build::TestResult> results;
     for (auto& mode : build::pick_modes(ws, r)) build::run_tests(ws, r, ids, mode, o, results);
@@ -170,6 +173,7 @@ int CheckCommand::Run(Context& ctx) {
     if (r.modes.empty()) r.modes = {"debug", "asan", "ubsan"};
     (void)build::pick_modes(ws, r);
     auto ids = selected_targets(ctx, r);
+    enforce_approval(ws, ids, ws.project.require_approval || r.require_approval, r.ignore_approval);
     auto o = read_test_options(ctx);
     std::vector<build::TestResult> results;
     for (auto& mode : r.modes) {

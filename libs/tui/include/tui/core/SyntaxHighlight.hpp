@@ -178,6 +178,13 @@ namespace detail {
                            "include", "export", "unexport", "override", "PHONY"};
             return s;
         }();
+        t["markdown"] = [] {
+            LanguageSpec s;
+            s.string_delims = {U'`'};      // code inline
+            s.block_comment_start = "<!--";
+            s.block_comment_end = "-->";
+            return s;
+        }();
         return t;
     }();
     return table;
@@ -206,6 +213,7 @@ namespace detail {
         {"yaml", "yaml"}, {"yml", "yaml"},
         {"toml", "toml"},
         {"mk", "make"},
+        {"md", "markdown"}, {"markdown", "markdown"},
     };
     auto it = by_ext.find(ext);
     return it == by_ext.end() ? "" : it->second;

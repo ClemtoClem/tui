@@ -810,6 +810,7 @@ int DoctorCommand::Run(Context& ctx) {
     term::outln("\n{}", term::bold("Outils"));
     struct T { const char* exe; const char* role; bool required; };
     for (auto t : {T{"ar", "archives statiques", true}, T{"pkg-config", "dépendances pkg-config", false},
+                   T{"ccache", "accélération de compilation", false},
                    T{"ninja", "--backend ninja", false}, T{"git", "dépendances git", false},
                    T{"tar", "package tar.gz/tar.xz", false}, T{"zip", "package zip", false},
                    T{"dpkg-deb", "package deb", false}, T{"sha256sum", "sommes de contrôle", false},

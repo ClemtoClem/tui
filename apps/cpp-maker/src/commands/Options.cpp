@@ -31,6 +31,10 @@ void add_build_options(args::Arguments& a, unsigned which) {
     if (which & kOptTests) a.add("--tests").set_value(false).help("Compiler aussi les exécutables de test");
     if (which & kOptBackend) a.add("--backend").set_value(std::string("native")).metavar("native|ninja")
         .help("Moteur d'exécution");
+    if (which & kOptApproval) {
+        a.add("--require-approval").set_value(false).help("Bloquer les cibles non approuvées ([review].status)");
+        a.add("--ignore-approval").set_value(false).help("Passer outre l'approbation requise");
+    }
     if (which & kOptSanitize) {
         a.add("--sanitize").set_value(std::vector<std::string>{}).flags("--sanitizer").metavar("LISTE")
             .help("Ajouter des sanitizers (address,undefined… ou all : une passe par runtime)");
@@ -92,6 +96,8 @@ build::Request read_request(Context& ctx, bool positional_targets) {
         r.backend = a.get<std::string>("--backend");
         if (r.backend != "native" && r.backend != "ninja") ctx.usage("--backend : native ou ninja");
     }
+    if (a.has("--require-approval")) r.require_approval = a.get<bool>("--require-approval");
+    if (a.has("--ignore-approval")) r.ignore_approval = a.get<bool>("--ignore-approval");
     if (a.has("--sanitize")) {
         r.san.sanitize = a.get<std::vector<std::string>>("--sanitize");
         r.san.trap = a.get<std::vector<std::string>>("--sanitize-trap");
@@ -113,6 +119,27 @@ std::vector<std::string> selected_targets(Context& ctx, const build::Request& r)
     }
     if (ids.empty()) util::fail("aucune cible dans ce projet (cpp-maker add module|app …)");
     return ids;
+}
+
+void enforce_approval(const model::Workspace& ws, const std::vector<std::string>& ids, bool required, bool ignore) {
+    if (!required || ignore) return;
+    // Une cible est bloquée si elle-même OU l'une de ses dépendances n'est pas approuvée.
+    std::vector<std::string> all;
+    for (auto& id : ids) {
+        util::push_unique(all, id);
+        for (auto& d : ws.closure(id)) util::push_unique(all, d);
+    }
+    std::vector<std::string> pending, pending_ids;
+    for (auto& id : all) {
+        const auto* t = ws.find(id);
+        if (!t || t->from_git || t->review.is_approved()) continue;
+        std::string state = t->review.status == "none" ? "non examinée" : t->review.status;
+        pending.push_back(std::format("{} ({})", id, state));
+        pending_ids.push_back(id);
+    }
+    if (pending.empty()) return;
+    util::fail("{} cible(s) non approuvée(s) : {}\n  cpp-maker review approve {}   (ou --ignore-approval pour passer outre)",
+               pending.size(), util::join(pending, ", "), util::join(pending_ids, " "));
 }
 
 } // namespace commands

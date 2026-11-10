@@ -23,17 +23,21 @@ cpp-maker tui            # interface interactive
 ```
 hello/
 ├── project.toml                       projet : build, modes, toolchains, tests, paquets, déploiements
+├── README.md                          documentation du projet (éditable dans la TUI)
 ├── libs/                              layers ([paths].layers)
 │   └── core/
 │       ├── layer.toml                 layer : dépendances et options héritées par ses modules
+│       ├── README.md                  documentation du layer
 │       └── hello/
 │           ├── module.toml            module : bibliothèque static | shared | header-only
+│           ├── README.md              documentation du module
 │           ├── include/hello/hello.hpp
 │           ├── src/hello.cpp
 │           └── tests/test_hello.cpp
 └── apps/                              applications ([paths].applications)
     └── hello/
         ├── application.toml           application : exécutable
+        ├── README.md                  documentation de l'application
         └── src/main.cpp
 ```
 
@@ -92,6 +96,8 @@ order = ["core", "net"]       # du plus bas au plus haut
 default_mode = "debug"
 default_toolchain = "host"
 jobs = 0                      # 0 = cœurs - 1
+require_approval = false      # bloquer build/test/… des cibles non approuvées ([review])
+ccache = true                 # accélérer la compilation via ccache s'il est installé
 
 [build.modes.profiling]       # mode personnalisé
 base = "relwithdebinfo"
@@ -133,6 +139,11 @@ system = ["pthread"]
 [dependencies.git.fmt]        # projet cpp-maker distant : modules importés sous « fmt.* »
 url = "https://example.com/fmt-cpp-maker.git"
 version = "v1.2.0"            # versions verrouillées dans cpp-maker.lock
+
+[review]                      # approbation (cpp-maker review)
+status = "approved"           # none | requested | approved | rejected
+reviewer = "alice"
+date = "2026-11-10"
 
 [platform.windows]
 system = ["ws2_32"]
@@ -200,6 +211,15 @@ Sanitizers à la volée : `--sanitize address,undefined` (mode dérivé `debug+a
 dans son propre dossier), `--sanitize all` (une passe par runtime), `--sanitize-trap`,
 `--no-sanitize-recover`, `--sanitize-ignorelist` ; catalogue : `cpp-maker help sanitize`.
 
+### Approbation
+Chaque module et application porte un état de revue dans `[review]` de son `module.toml` /
+`application.toml` : `none` → `requested` → `approved` ou `rejected`. `cpp-maker review status`
+affiche l'état ; `approve`/`reject` enregistrent le reviseur (`--by`) et la date ; `request`
+demande une nouvelle revue. Avec `[build].require_approval = true` (ou `--require-approval`),
+`build`, `test`, `run`, `package`, `install` et `deploy` refusent les cibles non approuvées
+(et leurs dépendances) ; `--ignore-approval` passe outre. La compilation est accélérée par
+**ccache** (automatique s'il est installé, `[build].ccache = false` pour le désactiver).
+
 ### Livraison
 | Commande | Rôle |
 |---|---|
@@ -215,6 +235,7 @@ dans son propre dossier), `--sanitize all` (une passe par runtime), `--sanitize-
 | `export compdb\|ninja\|xml` | `compile_commands.json`, `build.ninja`, archive XML de cibles |
 | `toolchain list\|show\|which\|add\|use\|install\|remove` | compilateurs, profils, versions gcc (apt) |
 | `doctor [--fix] [--strict]` | diagnostic (config, outils, toolchains, `#include` non déclarés) |
+| `review status\|approve\|reject\|request [cible…] [--by N] [--note T]` | approbation des cibles |
 | `tui` | interface interactive |
 
 ```sh
@@ -269,8 +290,13 @@ signale les références mortes et `doctor --fix` les nettoie (une règle vidée
   sélectionné : un **formulaire généré depuis le schéma** (champ vide = valeur par défaut,
   `‹ choix ›` modifiables avec ←/→) et des boutons d'action (ajouter, renommer, supprimer,
   compiler, tester…). **Ctrl+S** enregistre après validation complète du projet.
+  L'état d'approbation apparaît à côté de chaque module/application (✓ approuvé,
+  ✗ rejeté, ● demandé) ; les boutons **Approuver / Rejeter / Demander revue** relancent
+  `cpp-maker review`.
 - **F3 Fichier TOML** — édition brute, avec coloration, du fichier de l'élément sélectionné ;
-  le fichier n'est écrit que si le projet reste valide.
+  le fichier n'est écrit que si le projet reste valide. Les **README.md** du projet, de chaque
+  layer, module et application sont aussi éditables ici (nœud « README.md » de l'arbre) :
+  coloration Markdown, écriture directe sans validation.
 - **F8 Git** — modifications groupées par cible (Entrée : indexer / désindexer), commit avec ou
   sans crochet, simulation du pre-commit, journal, différences, push / pull, installation du crochet.
   Les règles pre-commit sont éditables dans l'arbre de F2 (nœud « Règles pre-commit »).

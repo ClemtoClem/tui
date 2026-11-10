@@ -26,6 +26,7 @@ struct Request {
     std::string cc, cxx;
     int jobs = 0;
     bool verbose = false, dry_run = false, keep_going = false, clean = false, tests = false;
+    bool require_approval = false, ignore_approval = false;   ///< verrou d'approbation
     std::string backend = "native";        ///< native | ninja
     sanitize::Request san;
 };
