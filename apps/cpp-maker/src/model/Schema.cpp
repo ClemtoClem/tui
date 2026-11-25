@@ -147,6 +147,7 @@ Spec make_project() {
         {"package", "Paquets", "Production des archives (package)."},
         {"deploy.*", "Déploiement", "Cible de déploiement (deploy <nom>)."},
         {"generate.*", "Génération", "Étape de génération de code exécutée avant le build."},
+        {"commands.*", "Commandes personnalisées", "Scripts shell exécutés par « cpp-maker cmd <nom> »."},
     };
     auto F = [&](std::string sec, std::string key, FT t, std::string label, std::string help,
                  std::vector<std::string> choices = {}, std::string ph = {}) {
@@ -244,6 +245,9 @@ Spec make_project() {
     F("generate.*", "outputs", FT::StringList, "Sorties", "");
     F("generate.*", "run_before", FT::StringList, "Avant", "build, run, test, check, package… ou all.", {}, "build");
     F("generate.*", "always", FT::Boolean, "Toujours", "Relancer à chaque fois.");
+
+    F("commands.*", "command", FT::String, "Commande", "Commande shell exécutée depuis la racine (obligatoire).");
+    F("commands.*", "description", FT::String, "Description", "");
     add_git_rules(s, "du projet");
     return s;
 }

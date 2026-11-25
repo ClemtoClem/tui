@@ -40,6 +40,7 @@ public:
     [[nodiscard]] int get_height() const override { return height_; }
 
     void clear_screen() override;
+    void write_clipboard(std::string_view text) override;
     void set_cursor_visible(bool visible) override;
     void set_cursor_position(int x, int y) override;
     void enable_mouse(bool enabled) override;
@@ -51,7 +52,7 @@ public:
 private:
     void query_size();
     void write_raw(std::string_view s);
-    [[nodiscard]] std::string sgr_sequence(const Cell& cell) const;
+    void append_cell_sequence(const Cell& cell, int x, int y);
 
     bool initialized_ = false;
     struct termios original_termios_{};

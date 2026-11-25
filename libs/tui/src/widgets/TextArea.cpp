@@ -66,7 +66,10 @@ Size TextArea::measure(const Constraints& c) const {
 
 void TextArea::arrange(Rect final_rect) {
     bounds_ = final_rect;
-    ensure_cursor_visible();
+    // Borne le défilement sans forcer le curseur visible : on peut défiler
+    // au-delà de la position du curseur. ensure_cursor_visible() n'est
+    // appelé qu'au déplacement du curseur.
+    clamp_scroll();
 }
 
 void TextArea::paint(Buffer& buffer) const {
@@ -104,12 +107,6 @@ void TextArea::paint(Buffer& buffer) const {
 
             buffer.set(bounds_.x + col, bounds_.y + row, Cell{ch, 1, cs.fg, Color::Default(), style});
         }
-    }
-
-    if (show_scrollbar_ && bounds_.width > 1) {
-        Rect track{bounds_.x + bounds_.width - 1, bounds_.y, 1, bounds_.height};
-        draw_vertical_scrollbar(buffer, track, static_cast<int>(lines_.size()), std::max(bounds_.height, 1),
-                                 scroll_line_, accent_color_);
     }
 }
 
@@ -232,13 +229,23 @@ bool TextArea::on_key(const KeyEvent& e) {
                 notify_changed();
             }
             return true;
-        case Key::Char:
+        case Key::Char: {
+            if (e.ctrl) {
+                char32_t c = (e.codepoint >= U'A' && e.codepoint <= U'Z') ? e.codepoint + 32 : e.codepoint;
+                switch (c) {
+                    case U'c': copy_selection(); return true;
+                    case U'x': if (!read_only_) cut_selection(); return true;
+                    case U'v': if (!read_only_) paste(); return true;
+                    case U'a': select_all(); return true;
+                    case U'z': if (!read_only_) undo(); return true;
+                    case U'y': if (!read_only_) redo(); return true;
+                    default: return false;
+                }
+            }
             if (read_only_) return false;
-            if (e.ctrl && (e.codepoint == U'z' || e.codepoint == U'Z')) { undo(); return true; }
-            if (e.ctrl && (e.codepoint == U'y' || e.codepoint == U'Y')) { redo(); return true; }
-            if (e.ctrl) return false;
             insert_text_at_cursor(std::u32string(1, e.codepoint), true);
             return true;
+        }
         default:
             return false;
     }
@@ -247,22 +254,27 @@ bool TextArea::on_key(const KeyEvent& e) {
 bool TextArea::on_mouse(const MouseEvent& e) {
     if (e.button == MouseEvent::Button::WheelUp) { scroll_lines_by(-3); return true; }
     if (e.button == MouseEvent::Button::WheelDown) { scroll_lines_by(3); return true; }
+    if (handle_scrollbar_mouse(e)) return true;
 
-    bool on_scrollbar_column = show_scrollbar_ && bounds_.width > 1 && e.x == bounds_.x + bounds_.width - 1;
-    if (on_scrollbar_column && e.button == MouseEvent::Button::Left &&
-        (e.action == MouseEvent::Action::Press || e.action == MouseEvent::Action::Drag)) {
-        Rect track{bounds_.x + bounds_.width - 1, bounds_.y, 1, bounds_.height};
-        scroll_line_ = scrollbar_hit_to_position(track, static_cast<int>(lines_.size()), std::max(bounds_.height, 1), e.y);
-        need_repaint();
-        return true;
-    }
-
-    if (e.button != MouseEvent::Button::Left || e.action != MouseEvent::Action::Press) return false;
+    if (e.button != MouseEvent::Button::Left) return false;
+    if (e.action != MouseEvent::Action::Press && e.action != MouseEvent::Action::Drag) return false;
     int line = std::clamp(scroll_line_ + (e.y - bounds_.y), 0, static_cast<int>(lines_.size()) - 1);
     int col = std::clamp(scroll_col_ + (e.x - bounds_.x), 0, static_cast<int>(lines_[static_cast<size_t>(line)].size()));
     // Alt+clic ajoute un curseur secondaire au lieu de déplacer le principal.
-    if (e.alt) { add_cursor_at({line, col}); return true; }
-    move_cursor({line, col}, e.shift);
+    if (e.alt) {
+        if (e.action == MouseEvent::Action::Press) add_cursor_at({line, col});
+        return true;
+    }
+    // Appui : place le curseur (avec Maj = extension). Glisser : étend la
+    // sélection depuis l'ancre posée à l'appui (sélection à la souris).
+    bool extend = e.action == MouseEvent::Action::Drag || e.shift;
+    move_cursor({line, col}, extend);
+    return true;
+}
+
+bool TextArea::on_paste(const std::string& text) {
+    if (read_only_ || text.empty()) return false;
+    insert_text_at_cursor(TextHelper::decode_utf8(text), false);
     return true;
 }
 
@@ -271,10 +283,28 @@ std::string TextArea::selected_text() const {
     return TextHelper::encode_utf8(text_in_range(selection_.start(), selection_.end()));
 }
 
+void TextArea::copy_selection() {
+    std::string sel = selected_text();
+    if (!sel.empty()) Clipboard::instance().set(std::move(sel));
+}
+
 std::string TextArea::cut_selection() {
     std::string result = selected_text();
+    if (!result.empty()) Clipboard::instance().set(result);
     delete_selection();
     return result;
+}
+
+void TextArea::paste() {
+    const std::string& clip = Clipboard::instance().get();
+    if (clip.empty()) return;
+    insert_text_at_cursor(TextHelper::decode_utf8(clip), false);
+}
+
+void TextArea::select_all() {
+    selection_.anchor = Pos{0, 0};
+    selection_.cursor = Pos{static_cast<int>(lines_.size()) - 1, static_cast<int>(lines_.back().size())};
+    need_repaint();
 }
 
 void TextArea::undo() {
@@ -562,6 +592,12 @@ void TextArea::ensure_cursor_visible() {
     }
 }
 
+void TextArea::clamp_scroll() {
+    int max_line = std::max(static_cast<int>(lines_.size()) - std::max(bounds_.height, 1), 0);
+    scroll_line_ = std::clamp(scroll_line_, 0, max_line);
+    if (scroll_col_ < 0) scroll_col_ = 0;
+}
+
 void TextArea::scroll_lines_by(int delta) {
     int max_scroll = std::max(static_cast<int>(lines_.size()) - std::max(bounds_.height, 1), 0);
     scroll_line_ = std::clamp(scroll_line_ + delta, 0, max_scroll);
@@ -569,7 +605,7 @@ void TextArea::scroll_lines_by(int delta) {
 }
 
 int TextArea::content_width() const {
-    return show_scrollbar_ && bounds_.width > 1 ? bounds_.width - 1 : bounds_.width;
+    return Widget::content_width();
 }
 
 void TextArea::apply_edit_command_inverse(const EditCommand& cmd) {

@@ -27,8 +27,7 @@ int put_text(tui::Buffer& b, int x, int y, int max_w, const std::string& text, C
     auto decoded = TextHelper::truncate_to_width(TextHelper::decode_utf8(text), max_w);
     int w = 0;
     for (char32_t ch : decoded) {
-        int cw = TextHelper::display_width(std::u32string(1, ch));
-        if (cw <= 0) cw = 1;
+        int cw = std::max(1, TextHelper::codepoint_width(ch));
         b.set(x + w, y, Cell{ch, static_cast<uint8_t>(cw), fg, bg, st});
         w += cw;
     }
@@ -105,7 +104,10 @@ tui::Size NavTree::measure(const tui::Constraints& c) const { return c.clamp({c.
 
 void NavTree::arrange(tui::Rect r) {
     bounds_ = r;
-    ensure_selected_visible();
+    // Borne le défilement sans forcer la sélection visible : on peut défiler
+    // au-delà de l'élément sélectionné. ensure_selected_visible() n'est appelé
+    // qu'au changement de sélection.
+    clamp_scroll();
 }
 
 void NavTree::ensure_selected_visible() {
@@ -113,8 +115,35 @@ void NavTree::ensure_selected_visible() {
     int sel = static_cast<int>(selected_);
     if (sel < scroll_) scroll_ = sel;
     if (sel >= scroll_ + h) scroll_ = sel - h + 1;
-    scroll_ = std::clamp(scroll_, 0, std::max(0, static_cast<int>(items_.size()) - h));
+    clamp_scroll();
 }
+
+void NavTree::clamp_scroll() {
+    int h = std::max(bounds_.height, 1);
+    scroll_ = std::clamp(scroll_, 0, std::max(0, static_cast<int>(items_.size()) - h));
+    scroll_col_ = std::clamp(scroll_col_, 0, max_scroll_col());
+}
+
+void NavTree::set_scroll_offset(int x, int y) {
+    scroll_ = y;
+    scroll_col_ = x;
+    clamp_scroll();
+    need_repaint();
+}
+
+tui::Size NavTree::content_size() const { return {row_max_width(), static_cast<int>(items_.size())}; }
+
+int NavTree::row_max_width() const {
+    int w = 0;
+    for (const auto& it : items_) {
+        int label = static_cast<int>(it.depth) * 2 + tui::TextHelper::display_width(tui::TextHelper::decode_utf8(it.label));
+        if (!it.hint.empty()) label += 1 + tui::TextHelper::display_width(tui::TextHelper::decode_utf8(it.hint));
+        w = std::max(w, label);
+    }
+    return w;
+}
+
+int NavTree::max_scroll_col() const { return std::max(row_max_width() - content_width(), 0); }
 
 void NavTree::paint(tui::Buffer& b) const {
     tui::ClipGuard clip(b, bounds_);
@@ -147,17 +176,19 @@ void NavTree::paint(tui::Buffer& b) const {
         }
         if (!bg.is_default || st != TextStyle::None)
             for (int x = 0; x < bounds_.width; ++x) b.set(bounds_.x + x, y, Cell{U' ', 1, fg, bg, st});
-        // Marqueur de sélection à gauche (barre d'accent), comme les listes Textual.
+        // Libellé + indice, décalés horizontalement de scroll_col_.
         int x = bounds_.x + it.depth * 2;
-        if (sel && css && focused_)
-            b.set(bounds_.x, y, Cell{U'▌', 1, style().extra_color("marker-color").value_or(tone_color(*this, Tone::Accent)), bg,
-                                     TextStyle::None});
-        int w = put_text(b, x + (css ? 1 : 0), y, bounds_.right() - x - (css ? 1 : 0), it.label, fg, bg, st);
+        int label_x = x + (css ? 1 : 0) - scroll_col_;
+        int w = put_text(b, label_x, y, bounds_.right() - label_x, it.label, fg, bg, st);
         if (!it.hint.empty()) {
-            int hx = x + (css ? 1 : 0) + w + 1;
+            int hx = label_x + w + 1;
             Color hc = sel && cur.active && css ? cur.fg : sel && focused_ ? Color::White() : hint_fg;
             put_text(b, hx, y, bounds_.right() - hx, it.hint, hc, bg, css ? TextStyle::Italic : TextStyle::Dim);
         }
+        // Marqueur de sélection à gauche (barre d'accent), par-dessus le texte.
+        if (sel && css && focused_)
+            b.set(bounds_.x, y, Cell{U'▌', 1, style().extra_color("marker-color").value_or(tone_color(*this, Tone::Accent)), bg,
+                                     TextStyle::None});
     }
 }
 
@@ -190,6 +221,7 @@ bool NavTree::on_key(const tui::KeyEvent& e) {
 
 bool NavTree::on_mouse(const tui::MouseEvent& e) {
     using MB = tui::MouseEvent::Button;
+    if (handle_h_scroll_wheel(e)) return true;
     if (e.button == MB::WheelUp) {
         scroll_ = std::max(0, scroll_ - 3);
         need_repaint();
@@ -200,6 +232,7 @@ bool NavTree::on_mouse(const tui::MouseEvent& e) {
         need_repaint();
         return true;
     }
+    if (handle_scrollbar_mouse(e)) return true;
     long idx = scroll_ + (e.y - bounds_.y);
     bool valid = idx >= 0 && idx < static_cast<long>(items_.size());
     if (e.action == tui::MouseEvent::Action::Move) {
@@ -341,6 +374,54 @@ bool ChoiceField::on_mouse(const tui::MouseEvent& e) {
         return true;
     }
     return false;
+}
+
+// ============================================================================
+// MarkdownView
+// ============================================================================
+
+void MarkdownView::set_text(std::string text) {
+    editor_->set_text(std::move(text));
+    retokenize();
+    editor_->set_style_hook([this](int line, int col) -> tui::CharStyle {
+        if (line < 0 || static_cast<size_t>(line) >= line_tokens_.size()) return {};
+        for (const auto& t : line_tokens_[static_cast<size_t>(line)]) {
+            if (col >= t.start_col && col < t.start_col + t.length) {
+                tui::CharStyle cs;
+                cs.fg = theme_.color(t.role);
+                // Titres markdown (« # … ») en gras pour ressortir.
+                if (t.role == tui::TokenRole::Preprocessor) cs.style = tui::TextStyle::Bold;
+                return cs;
+            }
+        }
+        return {};
+    });
+    need_repaint();
+}
+
+void MarkdownView::retokenize() {
+    line_tokens_.clear();
+    auto it = tui::language_specs().find("markdown");
+    if (it == tui::language_specs().end()) {
+        line_tokens_.assign(editor_->line_count(), {});
+        return;
+    }
+    bool in_comment = false;
+    line_tokens_.reserve(editor_->line_count());
+    for (size_t i = 0; i < editor_->line_count(); ++i)
+        line_tokens_.push_back(tui::tokenize_line(editor_->line(i), it->second, in_comment));
+}
+
+tui::Size MarkdownView::measure(const tui::Constraints& c) const { return editor_->measure(c); }
+
+void MarkdownView::arrange(tui::Rect r) {
+    bounds_ = r;
+    editor_->layout(r);
+}
+
+void MarkdownView::paint(tui::Buffer& b) const {
+    tui::ClipGuard clip(b, bounds_);
+    editor_->render(b); // render() (et non paint()) pour les barres de défilement
 }
 
 } // namespace ui

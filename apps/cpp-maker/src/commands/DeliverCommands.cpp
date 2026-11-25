@@ -3,6 +3,7 @@
 #include "commands/DeliverCommands.hpp"
 
 #include "commands/Options.hpp"
+#include "core/Process.hpp"
 #include "core/Term.hpp"
 #include "core/Util.hpp"
 #include "deliver/Deliver.hpp"
@@ -128,6 +129,40 @@ int DeployCommand::Run(Context& ctx) {
     br.dry_run = false;   // la simulation porte sur le transfert, pas sur la compilation
     if (s.build(br, "deploy") != 0) return 1;
     return deliver::deploy(s, d, {.dry_run = r.dry_run, .verbose = r.verbose});
+}
+
+int CmdCommand::Run(Context& ctx) {
+    ctx.expect_max_positionals(1);
+    auto& ws = ctx.workspace();
+    const std::string name = ctx.positional_or(0, "list");
+    if (name == "list") {
+        if (ws.project.commands.empty()) {
+            term::outln("Aucune commande personnalisée : ajoutez une table [commands.<nom>] à project.toml");
+            term::outln("  {}", term::dim("cpp-maker config set commands.clean-data.command 'rm -rf ~/.local/share/apps-lib'"));
+            return 0;
+        }
+        term::outln("{}", term::bold("Commandes personnalisées"));
+        for (auto& [n, c] : ws.project.commands)
+            term::outln("  {:<18} {}{}", term::cyan(n), c.command,
+                        c.description.empty() ? "" : "   # " + c.description);
+        return 0;
+    }
+    auto it = ws.project.commands.find(name);
+    if (it == ws.project.commands.end()) {
+        std::vector<std::string> names;
+        for (auto& [n, c] : ws.project.commands) names.push_back(n);
+        auto s = util::suggest(name, names);
+        util::fail("commande inconnue '{}'{}", name, s.empty() ? "" : " (vouliez-vous dire '" + s + "' ?)");
+    }
+    const auto& c = it->second;
+    term::outln("{} {}", term::magenta("$"), c.command);
+    auto r = proc::shell(c.command, {.cwd = ws.root});
+    if (r.exit_code != 0) {
+        term::errln("la commande a échoué (code {})", r.exit_code);
+        return r.exit_code;
+    }
+    term::ok("commande '{}' terminée", name);
+    return 0;
 }
 
 } // namespace commands

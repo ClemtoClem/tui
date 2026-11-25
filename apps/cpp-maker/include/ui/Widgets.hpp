@@ -14,8 +14,10 @@
 
 #include <tui/Buffer.hpp>
 #include <tui/core/Color.hpp>
+#include <tui/core/SyntaxHighlight.hpp>
 #include <tui/widget/Widget.hpp>
 #include <tui/widgets/Input.hpp>
+#include <tui/widgets/TextArea.hpp>
 
 #include <functional>
 #include <string>
@@ -51,11 +53,14 @@ public:
     [[nodiscard]] std::string selected_id() const;
     void set_on_select(std::function<void(const std::string&)> cb) { on_select_ = std::move(cb); }
     void set_on_activate(std::function<void(const std::string&)> cb) { on_activate_ = std::move(cb); }
-    void set_accent(tui::Color c) { accent_ = c; }
+    void set_accent(tui::Color c) { accent_ = c; set_scrollbar_color(c); }
 
     [[nodiscard]] tui::Size measure(const tui::Constraints& c) const override;
     void arrange(tui::Rect r) override;
     void paint(tui::Buffer& buffer) const override;
+    [[nodiscard]] tui::Size content_size() const override;
+    [[nodiscard]] tui::Point scroll_offset() const override { return {scroll_col_, scroll_}; }
+    void set_scroll_offset(int x, int y) override;
     [[nodiscard]] bool focusable() const override { return true; }
     void on_focus() override { focused_ = true; need_repaint(); }
     void on_blur() override { focused_ = false; need_repaint(); }
@@ -66,6 +71,7 @@ private:
     std::vector<NavItem> items_;
     size_t selected_ = 0;
     int scroll_ = 0;
+    int scroll_col_ = 0;
     int hover_ = -1;   ///< ligne survolée (index d'élément), -1 sinon
     bool focused_ = false;
     tui::Color accent_ = tui::Color::Default();
@@ -73,6 +79,9 @@ private:
 
     void move_to(long index);
     void ensure_selected_visible();
+    void clamp_scroll();
+    [[nodiscard]] int row_max_width() const;
+    [[nodiscard]] int max_scroll_col() const;
 };
 
 class ChoiceField : public tui::Widget {
@@ -127,6 +136,38 @@ public:
 
 private:
     std::function<void()> on_focus_cb_;
+};
+
+/// Visualiseur Markdown en lecture seule : coloration (titres, code,
+/// commentaires HTML), texte sélectionnable au clavier et à la souris pour
+/// être copié. Aucune édition.
+class MarkdownView : public tui::Widget {
+public:
+    explicit MarkdownView(std::string text = {}) {
+        editor_->set_parent(this);
+        editor_->set_read_only(true);
+        editor_->set_show_scrollbar(true);
+        set_text(std::move(text));
+    }
+
+    void set_text(std::string text);
+
+    [[nodiscard]] tui::Size measure(const tui::Constraints& c) const override;
+    void arrange(tui::Rect r) override;
+    void paint(tui::Buffer& b) const override;
+
+    [[nodiscard]] bool focusable() const override { return true; }
+    void on_focus() override { editor_->on_focus(); }
+    void on_blur() override { editor_->on_blur(); }
+    bool on_key(const tui::KeyEvent& e) override { return editor_->on_key(e); }
+    bool on_mouse(const tui::MouseEvent& e) override { return editor_->on_mouse(e); }
+    [[nodiscard]] std::vector<std::shared_ptr<tui::Widget>> children() const override { return {editor_}; }
+
+private:
+    std::shared_ptr<tui::TextArea> editor_ = std::make_shared<tui::TextArea>();
+    std::vector<std::vector<tui::Token>> line_tokens_;
+    tui::SyntaxTheme theme_;
+    void retokenize();
 };
 
 } // namespace ui

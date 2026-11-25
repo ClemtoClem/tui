@@ -48,7 +48,7 @@ public:
         case U'%': return {"o ╱", " ╱ ", "╱ o"};
         case U' ': return {" ", " ", " "};
         default: {
-            std::string s = TextHelper::encode_utf8(std::u32string(1, ch));
+            std::string s = TextHelper::encode_utf8(ch);
             return {" ", s, " "};
         }
         }

@@ -44,18 +44,27 @@ public:
     void set_on_activate(std::function<void(TreeNode&)> cb) { on_activate_ = std::move(cb); }
 
     /// Réserve la dernière colonne pour une piste de défilement cliquable,
-    /// comme ListView::set_show_scrollbar().
-    void set_show_scrollbar(bool show) { show_scrollbar_ = show; need_repaint(); }
-
-    void set_accent_color(Color color) { accent_color_ = color; need_repaint(); }
+    /// comme ListView (la politique est gérée par Widget::set_scrollbar_policy).
+    void set_accent_color(Color color) { accent_color_ = color; set_scrollbar_color(color); need_repaint(); }
 
     [[nodiscard]] Size measure(const Constraints& c) const override {
         return c.clamp({c.max_width, c.max_height});
     }
 
+    [[nodiscard]] Size content_size() const override { return {row_max_width(), static_cast<int>(visible_.size())}; }
+    [[nodiscard]] Point scroll_offset() const override { return {scroll_col_, scroll_offset_}; }
+    void set_scroll_offset(int x, int y) override {
+        scroll_offset_ = y;
+        scroll_col_ = x;
+        clamp_scroll();
+        need_repaint();
+    }
+
     void arrange(Rect final_rect) override {
         bounds_ = final_rect;
-        ensure_visible();
+        // Borne le défilement sans forcer la sélection visible (pour pouvoir
+        // défiler au-delà de l'élément sélectionné).
+        clamp_scroll();
     }
 
     void paint(Buffer& buffer) const override {
@@ -64,11 +73,6 @@ public:
             size_t idx = static_cast<size_t>(scroll_offset_ + row);
             if (idx >= visible_.size()) continue;
             paint_row(buffer, visible_[idx], idx, bounds_.y + row);
-        }
-        if (show_scrollbar_ && bounds_.width > 1) {
-            Rect track{bounds_.x + bounds_.width - 1, bounds_.y, 1, bounds_.height};
-            draw_vertical_scrollbar(buffer, track, static_cast<int>(visible_.size()),
-                                     std::max(bounds_.height, 1), scroll_offset_, accent_color_);
         }
     }
 
@@ -93,18 +97,10 @@ public:
 
     bool on_mouse(const MouseEvent& e) override {
         if (visible_.empty()) return false;
+        if (handle_h_scroll_wheel(e)) return true;
         if (e.button == MouseEvent::Button::WheelUp) { scroll_by(-3); return true; }
         if (e.button == MouseEvent::Button::WheelDown) { scroll_by(3); return true; }
-
-        bool on_scrollbar_column = show_scrollbar_ && bounds_.width > 1 && e.x == bounds_.x + bounds_.width - 1;
-        if (on_scrollbar_column && e.button == MouseEvent::Button::Left &&
-            (e.action == MouseEvent::Action::Press || e.action == MouseEvent::Action::Drag)) {
-            Rect track{bounds_.x + bounds_.width - 1, bounds_.y, 1, bounds_.height};
-            scroll_offset_ = scrollbar_hit_to_position(track, static_cast<int>(visible_.size()),
-                                                         std::max(bounds_.height, 1), e.y);
-            need_repaint();
-            return true;
-        }
+        if (handle_scrollbar_mouse(e)) return true;
 
         if (e.button != MouseEvent::Button::Left || e.action != MouseEvent::Action::Press) return false;
         size_t idx = static_cast<size_t>(scroll_offset_ + (e.y - bounds_.y));
@@ -218,9 +214,22 @@ private:
     void clamp_scroll() {
         int max_scroll = std::max(static_cast<int>(visible_.size()) - std::max(bounds_.height, 0), 0);
         scroll_offset_ = std::clamp(scroll_offset_, 0, max_scroll);
+        scroll_col_ = std::clamp(scroll_col_, 0, max_scroll_col());
     }
 
-    [[nodiscard]] int content_width() const { return show_scrollbar_ && bounds_.width > 1 ? bounds_.width - 1 : bounds_.width; }
+    [[nodiscard]] int content_width() const { return Widget::content_width(); }
+
+    [[nodiscard]] int row_max_width() const {
+        int w = 0;
+        for (const auto& e : visible_) {
+            bool expandable = !e.node->children.empty() || e.node->lazy_expand;
+            std::string marker = !expandable ? "  " : (e.node->expanded ? "▾ " : "▸ ");
+            std::string indent(static_cast<size_t>(e.depth) * 2, ' ');
+            w = std::max(w, TextHelper::display_width(TextHelper::decode_utf8(indent + marker + e.node->label)));
+        }
+        return w;
+    }
+    [[nodiscard]] int max_scroll_col() const { return std::max(row_max_width() - content_width(), 0); }
 
     void paint_row(Buffer& buffer, const VisibleEntry& entry, size_t idx, int y) const {
         bool expandable = !entry.node->children.empty() || entry.node->lazy_expand;
@@ -228,26 +237,28 @@ private:
         std::string indent(static_cast<size_t>(entry.depth) * 2, ' ');
         std::string display = indent + marker + entry.node->label;
         auto decoded = TextHelper::decode_utf8(display);
-        auto truncated = TextHelper::truncate_to_width(decoded, content_width());
         RowCursor cur = row_cursor(focused_);
         bool sel = cur.active && idx == selected_;
         TextStyle style = sel ? cur.style : TextStyle::None;
         Color fg = sel ? cur.fg : Color::Default(), bg = sel ? cur.bg : Color::Default();
-        int x = bounds_.x;
+        int left = bounds_.x;
+        int right = left + content_width();
         if (sel && cur.full_row)
-            for (int fx = x; fx < x + content_width(); ++fx) buffer.set(fx, y, Cell{U' ', 1, fg, bg, style});
-        for (char32_t ch : truncated) {
-            buffer.set(x, y, Cell{ch, 1, fg, bg, style});
+            for (int fx = left; fx < right; ++fx) buffer.set(fx, y, Cell{U' ', 1, fg, bg, style});
+        int x = left - scroll_col_;
+        for (char32_t ch : decoded) {
+            if (x >= right) break;
+            if (x >= left) buffer.set(x, y, Cell{ch, 1, fg, bg, style});
             ++x;
         }
     }
 
-    bool show_scrollbar_ = false;
     Color accent_color_ = Color::Default();
     std::shared_ptr<TreeNode> root_;
     std::vector<VisibleEntry> visible_;
     size_t selected_ = 0;
     int scroll_offset_ = 0;
+    int scroll_col_ = 0;
     bool focused_ = false;
     std::function<void(TreeNode&)> on_activate_;
 };

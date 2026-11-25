@@ -202,6 +202,13 @@ struct GenerateStep {
     bool always = false;
 };
 
+/// Commande personnalisée ([commands.<nom>]) exécutée par « cpp-maker cmd <nom> ».
+struct CommandConfig {
+    std::string name;
+    std::string command;
+    std::string description;
+};
+
 struct ProjectConfig {
     fs::path file;   ///< absolu
     std::string name = "project";
@@ -247,6 +254,7 @@ struct ProjectConfig {
     PackageConfig package;
     std::map<std::string, DeployConfig> deploys;
     std::vector<GenerateStep> generate;
+    std::map<std::string, CommandConfig> commands;
     std::vector<PreCommitRule> pre_commit;
 
     [[nodiscard]] const ModeConfig* find_mode(const std::string& n) const {

@@ -4,6 +4,9 @@ namespace tui {
 
     int App::run() {
         backend_->init();
+        // Le presse-papiers interne propage vers le presse-papiers système
+        // (OSC 52) quand le backend le supporte.
+        Clipboard::instance().set_system_sink([this](const std::string& t) { backend_->write_clipboard(t); });
         if (mouse_enabled_) backend_->enable_mouse(true);
         buffer_.resize(backend_->get_width(), backend_->get_height());
 
@@ -36,6 +39,7 @@ namespace tui {
             timers_.run_due(TimerManager::Clock::now());
             drain_posted();
             check_css_watch();
+            update_tooltip();
 
             if (dirty_) {
                 render_frame();
@@ -44,6 +48,7 @@ namespace tui {
         }
 
         backend_->shutdown();
+        Clipboard::instance().set_system_sink(nullptr);
         return exit_code_;
     }
 
@@ -74,6 +79,10 @@ namespace tui {
                 }
             } else if constexpr (std::is_same_v<T, MouseEvent>) {
                 handle_mouse(e);
+            } else if constexpr (std::is_same_v<T, PasteEvent>) {
+                auto target = focus_.current();
+                if (!target) target = root_;
+                if (target && target->on_paste(e.text)) dirty_ = true;
             }
         }, ev);
     }
@@ -89,6 +98,10 @@ namespace tui {
             (void)root_->measure_outer(Constraints::tight(available));
             root_->layout(Rect{0, 0, available.width, available.height});
             root_->render(buffer_.back());
+            if (tooltip_.visible()) {
+                tooltip_.arrange({0, 0, available.width, available.height});
+                tooltip_.paint(buffer_.back());
+            }
         }
         buffer_.diff_and_flush(*backend_);
     }
@@ -108,13 +121,51 @@ namespace tui {
             w->set_hovered(true);
             hover_chain_.push_back(w->weak_from_this());
         }
+        // Changement de cible survolée : on masque toute infobulle et on
+        // relance son délai d'apparition.
+        tooltip_target_.reset();
+        tooltip_.hide();
+        hover_since_ = std::chrono::steady_clock::now();
         if (styling_active()) dirty_ = true;
+    }
+
+    void App::update_tooltip() {
+        auto target = hovered_.lock();
+        if (!target) {
+            if (tooltip_.visible()) { tooltip_.hide(); dirty_ = true; }
+            tooltip_target_.reset();
+            return;
+        }
+        // Première description trouvée en remontant les ancêtres (un enfant
+        // peut surcharger la description de son conteneur).
+        std::string text;
+        for (Widget* w = target.get(); w; w = w->parent()) {
+            if (!w->tooltip().empty()) { text = w->tooltip(); break; }
+        }
+        if (text.empty()) {
+            if (tooltip_.visible()) { tooltip_.hide(); dirty_ = true; }
+            tooltip_target_.reset();
+            return;
+        }
+        if (tooltip_target_.lock() != target) {
+            tooltip_target_ = target;
+            hover_since_ = std::chrono::steady_clock::now();
+            return;
+        }
+        if (!tooltip_.visible() &&
+            std::chrono::steady_clock::now() - hover_since_ >= kTooltipDelay) {
+            tooltip_.set_text(std::move(text));
+            tooltip_.set_anchor(hover_pos_);
+            tooltip_.show();
+            dirty_ = true;
+        }
     }
 
     void App::handle_mouse(const MouseEvent& raw) {
         using A = MouseEvent::Action;
         using B = MouseEvent::Button;
         MouseEvent e = raw;
+        hover_pos_ = {e.x, e.y};
         // Double-clic : même bouton, même cellule, dans le délai imparti.
         if (e.action == A::Press && (e.button == B::Left || e.button == B::Right || e.button == B::Middle)) {
             auto now = std::chrono::steady_clock::now();

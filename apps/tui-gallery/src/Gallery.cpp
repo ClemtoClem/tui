@@ -91,7 +91,7 @@ Gallery::Gallery(App& app) : app_(app) {
     progress = std::make_shared<ProgressBar>();
     progress->set_show_label(true);
     controls->add_child(progress, LayoutParams::fixed(1));
-    link = std::make_shared<Link>("Documentation de Textual", "https://textual.textualize.io");
+    link = std::make_shared<Link>("Documentation de Github", "https://docs.github.com/fr");
     link->set_on_click([this](const std::string& url) { status->set_text("Lien : " + url); });
     controls->add_child(link, LayoutParams::fixed(1));
     controls->add_child(std::make_shared<Label>(), LayoutParams::stretch(1));

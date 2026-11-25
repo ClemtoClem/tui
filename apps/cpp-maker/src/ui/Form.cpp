@@ -105,6 +105,9 @@ Form::Form(schema::FileKind kind, std::vector<FormSection> sections, std::set<st
                 row->add_child(in, tui::LayoutParams::stretch(1));
             }
             root_->add_child(row, tui::LayoutParams::fixed(1));
+            // Infobulle au survol : la description du champ vient du schéma.
+            row->set_tooltip(std::format("{}.{} — {}", toml::join_path(sec.table), spec->key,
+                                         spec->help.empty() ? spec->label : spec->help));
             fields_.push_back(std::move(fld));
         }
     }

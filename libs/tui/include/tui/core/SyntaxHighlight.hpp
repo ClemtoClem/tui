@@ -183,6 +183,7 @@ namespace detail {
             s.string_delims = {U'`'};      // code inline
             s.block_comment_start = "<!--";
             s.block_comment_end = "-->";
+            s.hash_is_preprocessor = true; // « # titre » en début de ligne (rôle Preprocessor)
             return s;
         }();
         return t;

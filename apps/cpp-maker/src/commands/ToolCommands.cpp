@@ -861,19 +861,31 @@ int DoctorCommand::Run(Context& ctx) {
     }
 
     if (ws) {
-        term::outln("\n{}", term::bold("Dépendances implicites (#include)"));
+        term::outln("\n{}", term::bold("Dépendances implicites (#include / import)"));
         auto missing = analysis::detect_missing_deps(*ws);
-        if (missing.empty()) good("toutes les inclusions d'en-têtes publics sont couvertes par les dépendances déclarées");
+        if (missing.empty()) good("toutes les inclusions et importations de modules sont couvertes par les dépendances déclarées");
         for (auto& m : missing) {
-            std::string msg = std::format("{} inclut <{}> ({}) sans dépendre de {}", m.target, m.header,
-                                          util::display(m.file, ws->root), m.module);
-            if (ctx.flag("--strict")) bad(msg);
-            else note(msg);
+            std::string where = util::display(m.file, ws->root);
+            if (m.ambiguous()) {
+                std::string msg = std::format("{} : l'{} « {} » est ambigu — précisez le layer (modules : {})",
+                                              where, m.via_import ? "import" : "inclusion", m.header,
+                                              util::join(m.alternatives, ", "));
+                note(msg);
+            } else {
+                std::string msg = std::format("{} {} « {} » ({}) sans dépendre de {}",
+                                              m.target, m.via_import ? "importe" : "inclut", m.header, where, m.module);
+                if (ctx.flag("--strict")) bad(msg);
+                else note(msg);
+            }
         }
-        if (!missing.empty() && ctx.flag("--fix")) {
+        // --fix n'ajoute que les dépendances non ambiguës.
+        std::vector<analysis::MissingDep> fixable;
+        for (auto& m : missing)
+            if (!m.ambiguous()) fixable.push_back(m);
+        if (!fixable.empty() && ctx.flag("--fix")) {
             model::Transaction tx(ws->root);
             std::map<std::string, std::vector<std::string>> add;
-            for (auto& m : missing) add[m.target].push_back(m.module);
+            for (auto& m : fixable) add[m.target].push_back(m.module);
             for (auto& [id, mods] : add) {
                 auto* t = ws->find(id);
                 auto& d = tx.doc(t->file);
@@ -885,11 +897,11 @@ int DoctorCommand::Run(Context& ctx) {
             try {
                 tx.commit();
                 term::ok("{} fichier(s) corrigé(s)", add.size());
-                if (ctx.flag("--strict")) problems -= static_cast<int>(missing.size());
+                if (ctx.flag("--strict")) problems -= static_cast<int>(fixable.size());
             } catch (const util::Error& e) {
                 bad(std::format("correction annulée : {}", e.what()));
             }
-        } else if (!missing.empty()) {
+        } else if (!fixable.empty()) {
             term::outln("  {}", term::dim("cpp-maker doctor --fix pour ajouter ces dépendances"));
         }
 

@@ -39,6 +39,9 @@ public:
 
     void clear_screen() override { painted_.clear(); }
 
+    void write_clipboard(std::string_view text) override { clipboard_ = std::string(text); }
+    [[nodiscard]] const std::string& clipboard() const { return clipboard_; }
+
     void set_cursor_visible(bool visible) override { cursor_visible_ = visible; }
     void set_cursor_position(int x, int y) override { cursor_x_ = x; cursor_y_ = y; }
     void enable_mouse(bool enabled) override { mouse_enabled_ = enabled; }
@@ -76,6 +79,7 @@ private:
     bool mouse_enabled_ = false;
     int cursor_x_ = 0;
     int cursor_y_ = 0;
+    std::string clipboard_;
     size_t draw_cell_calls_ = 0;
     size_t flush_calls_ = 0;
 };

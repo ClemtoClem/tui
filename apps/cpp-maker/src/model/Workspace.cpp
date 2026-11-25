@@ -433,6 +433,18 @@ void Workspace::load_project_file() {
             p.generate.push_back(std::move(g));
         }
     }
+    if (auto* t = r.table({"commands"})) {
+        for (size_t i = 0; i < t->size(); ++i) {
+            const std::string& n = t->keys()[i];
+            auto& v = t->value_at(i);
+            if (!v.is_table()) util::fail("{}: commands.{} doit être une table", r.file(), n);
+            CommandConfig c;
+            c.name = n;
+            r.str(&v, "command", c.command);
+            r.str(&v, "description", c.description);
+            p.commands[n] = std::move(c);
+        }
+    }
     if (!p.min_version.empty() && util::compare_versions(cppmaker::kVersion, p.min_version) < 0)
         util::fail("{}: ce projet requiert cpp-maker {} (version installée : {})", r.file(), p.min_version,
                    cppmaker::kVersion);
@@ -1077,6 +1089,8 @@ std::vector<std::string> Workspace::validate() const {
         for (auto& c : g.run_before)
             if (!cmds.count(c)) E(std::format("{}: generate.{}.run_before : commande inconnue '{}'", pf, g.name, c));
     }
+    for (auto& [n, c] : p.commands)
+        if (c.command.empty()) E(std::format("{}: commands.{}.command requis", pf, n));
     // --- Règles pre-commit
     auto check_rules = [&](const std::vector<PreCommitRule>& rules) {
         for (auto& rule : rules) {

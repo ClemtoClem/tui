@@ -5,6 +5,7 @@
 #include "tui/Buffer.hpp"
 #include "tui/style/ColorUtil.hpp"
 #include "tui/widget/BoxFrame.hpp"
+#include "tui/widget/Scrollbar.hpp"
 
 #include <cxxabi.h>
 
@@ -151,7 +152,7 @@ void draw_title(Buffer& b, Rect outer, int y, const std::string& text, Color fg,
     int w = TextHelper::display_width(decoded);
     int x = right ? outer.right() - 2 - w : outer.x + 2;
     for (char32_t ch : decoded) {
-        int cw = std::max(1, TextHelper::display_width(std::u32string(1, ch)));
+        int cw = std::max(1, TextHelper::codepoint_width(ch));
         b.set(x, y, Cell{ch, static_cast<uint8_t>(cw), fg, bg, st});
         if (cw == 2) b.set(x + 1, y, Cell::continuation());
         x += cw;
@@ -162,7 +163,8 @@ void draw_title(Buffer& b, Rect outer, int y, const std::string& text, Color fg,
 
 void Widget::render(Buffer& buffer) const {
     if (css_style_.empty()) {
-        paint(buffer);
+        paint_clipped(buffer);
+        draw_scrollbars(buffer);
         return;
     }
     if (!visible()) return;
@@ -186,7 +188,7 @@ void Widget::render(Buffer& buffer) const {
         draw_title(buffer, outer, outer.bottom() - 1, border_subtitle_, tc, bg, TextStyle::None, true);
     }
 
-    paint(buffer);
+    paint_clipped(buffer);
 
     // Passe d'héritage : les cellules aux couleurs « par défaut » prennent
     // celles du style ; le style de texte s'applique aux widgets feuilles.
@@ -209,6 +211,57 @@ void Widget::render(Buffer& buffer) const {
             if (leaf && st.text_style && c.width != 0) c.style = c.style | *st.text_style;
         }
     }
+
+    // Les barres se dessinent en dernier, par-dessus le contenu et l'héritage.
+    draw_scrollbars(buffer);
+}
+
+void Widget::paint_clipped(Buffer& buffer) const {
+    bool show_v = v_scrollbar_visible();
+    bool show_h = h_scrollbar_visible();
+    if (show_v || show_h) {
+        ClipGuard clip(buffer, bounds_.inset(0, show_v ? 1 : 0, show_h ? 1 : 0, 0));
+        paint(buffer);
+    } else {
+        paint(buffer);
+    }
+}
+
+void Widget::draw_scrollbars(Buffer& buffer) const {
+    bool show_v = v_scrollbar_visible();
+    bool show_h = h_scrollbar_visible();
+    Size content = content_size();
+    Point off = scroll_offset();
+    if (show_v) {
+        Rect track{bounds_.right() - 1, bounds_.y, 1, bounds_.height - (show_h ? 1 : 0)};
+        draw_vertical_scrollbar(buffer, track, content.height, bounds_.height, off.y, scrollbar_color_);
+    }
+    if (show_h) {
+        Rect track{bounds_.x, bounds_.bottom() - 1, bounds_.width - (show_v ? 1 : 0), 1};
+        draw_horizontal_scrollbar(buffer, track, content.width, bounds_.width, off.x, scrollbar_color_);
+    }
+}
+
+bool Widget::handle_scrollbar_mouse(const MouseEvent& e) {
+    if (e.button != MouseEvent::Button::Left) return false;
+    if (e.action != MouseEvent::Action::Press && e.action != MouseEvent::Action::Drag) return false;
+    bool show_v = v_scrollbar_visible();
+    bool show_h = h_scrollbar_visible();
+    Size content = content_size();
+    Point off = scroll_offset();
+    // Colonne de droite : barre verticale.
+    if (show_v && e.x == bounds_.right() - 1 && e.y >= bounds_.y && e.y < bounds_.bottom() - (show_h ? 1 : 0)) {
+        Rect track{bounds_.right() - 1, bounds_.y, 1, bounds_.height - (show_h ? 1 : 0)};
+        set_scroll_offset(off.x, scrollbar_hit_to_position(track, content.height, bounds_.height, e.y));
+        return true;
+    }
+    // Ligne du bas : barre horizontale.
+    if (show_h && e.y == bounds_.bottom() - 1 && e.x >= bounds_.x && e.x < bounds_.right() - (show_v ? 1 : 0)) {
+        Rect track{bounds_.x, bounds_.bottom() - 1, bounds_.width - (show_v ? 1 : 0), 1};
+        set_scroll_offset(scrollbar_hit_to_position_x(track, content.width, bounds_.width, e.x), off.y);
+        return true;
+    }
+    return false;
 }
 
 } // namespace tui

@@ -10,6 +10,7 @@
 #include "core/Util.hpp"
 
 #include <algorithm>
+#include <chrono>
 
 namespace commands {
 
@@ -113,7 +114,13 @@ int RunCommand::Run(Context& ctx) {
     proc::Options po;
     po.env = t.run_env;
     if (!t.run_cwd.empty()) po.cwd = util::under(ws.root, t.run_cwd);
-    return proc::run(cmd, po).exit_code;
+    auto t0 = std::chrono::steady_clock::now();
+    auto res = proc::run(cmd, po);
+    if (res.exit_code != 0)
+        term::info("exécution terminée en {} (code {})", util::elapsed(t0), res.exit_code);
+    else
+        term::info("exécution terminée en {}", util::elapsed(t0));
+    return res.exit_code;
 }
 
 // ============================================================================

@@ -69,6 +69,11 @@ public:
     /// poll_event() bloque réellement (PosixTerminalBackend) a besoin
     /// d'implémenter ce mécanisme.
     virtual void wake_up() {}
+
+    /// Copie `text` vers le presse-papiers du terminal (OSC 52 sur un
+    /// terminal réel). No-op par défaut : le presse-papiers interne au
+    /// processus (Clipboard) fonctionne dans tous les cas.
+    virtual void write_clipboard(std::string_view /*text*/) {}
 };
 
 } // namespace tui

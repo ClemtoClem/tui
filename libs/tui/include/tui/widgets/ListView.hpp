@@ -58,18 +58,13 @@ public:
 
     void set_style(ListViewStyle style) { style_ = style; need_repaint(); }
 
-    /// Réserve la dernière colonne pour une piste de défilement cliquable
-    /// (jump-to-position) en plus de la molette/PageUp/PageDown déjà
-    /// gérés. Désactivée par défaut pour ne rien changer aux listes
-    /// existantes qui utilisent toute leur largeur pour le texte.
-    void set_show_scrollbar(bool show) { show_scrollbar_ = show; need_repaint(); }
-
     /// Couleurs utilisées par le style Detailed ; sans effet en Compact
     /// (qui reste en vidéo inverse par défaut du terminal).
     void set_colors(Color accent, Color foreground, Color muted) {
         accent_color_ = accent;
         foreground_color_ = foreground;
         muted_color_ = muted;
+        set_scrollbar_color(accent);
         need_repaint();
     }
 
@@ -89,9 +84,24 @@ public:
         return c.clamp({c.max_width, c.max_height});
     }
 
+    [[nodiscard]] Size content_size() const override {
+        return {row_max_width(), static_cast<int>(items_.size()) * row_height()};
+    }
+    [[nodiscard]] Point scroll_offset() const override { return {scroll_col_, scroll_offset_ * row_height()}; }
+    void set_scroll_offset(int x, int y) override {
+        int rh = std::max(row_height(), 1);
+        int max_items = std::max(static_cast<int>(items_.size()) - visible_item_count(), 0);
+        scroll_offset_ = std::clamp(y / rh, 0, max_items);
+        scroll_col_ = std::clamp(x, 0, max_scroll_col());
+        need_repaint();
+    }
+
     void arrange(Rect final_rect) override {
         bounds_ = final_rect;
-        ensure_visible();
+        // On ne fait que borner le défilement : on n'y force PAS la sélection
+        // visible, pour que l'utilisateur puisse défiler au-delà de l'élément
+        // sélectionné. ensure_visible() n'intervient qu'au changement de sélection.
+        clamp_scroll();
     }
 
     void paint(Buffer& buffer) const override {
@@ -106,11 +116,6 @@ public:
             } else {
                 paint_row_compact(buffer, items_[idx], idx, y);
             }
-        }
-        if (show_scrollbar_ && bounds_.width > 1) {
-            Rect track{bounds_.x + bounds_.width - 1, bounds_.y, 1, bounds_.height};
-            draw_vertical_scrollbar(buffer, track, static_cast<int>(items_.size()), visible_item_count(),
-                                     scroll_offset_, accent_color_);
         }
     }
 
@@ -132,17 +137,10 @@ public:
     }
 
     bool on_mouse(const MouseEvent& e) override {
+        if (handle_h_scroll_wheel(e)) return true;
         if (e.button == MouseEvent::Button::WheelUp) { scroll_by(-3); return true; }
         if (e.button == MouseEvent::Button::WheelDown) { scroll_by(3); return true; }
-        bool on_scrollbar_column = show_scrollbar_ && bounds_.width > 1 && e.x == bounds_.x + bounds_.width - 1;
-        if (on_scrollbar_column && e.button == MouseEvent::Button::Left &&
-            (e.action == MouseEvent::Action::Press || e.action == MouseEvent::Action::Drag)) {
-            Rect track{bounds_.x + bounds_.width - 1, bounds_.y, 1, bounds_.height};
-            int pos = scrollbar_hit_to_position(track, static_cast<int>(items_.size()), visible_item_count(), e.y);
-            scroll_offset_ = pos;
-            need_repaint();
-            return true;
-        }
+        if (handle_scrollbar_mouse(e)) return true;
         if (e.button == MouseEvent::Button::Left && e.action == MouseEvent::Action::Press) {
             int height = row_height();
             size_t idx = static_cast<size_t>(scroll_offset_ + (e.y - bounds_.y) / std::max(height, 1));
@@ -160,7 +158,6 @@ public:
 private:
     [[nodiscard]] int row_height() const { return style_ == ListViewStyle::Detailed ? 3 : 1; }
     [[nodiscard]] int visible_item_count() const { return std::max(bounds_.height / std::max(row_height(), 1), 1); }
-    [[nodiscard]] int content_width() const { return show_scrollbar_ && bounds_.width > 1 ? bounds_.width - 1 : bounds_.width; }
 
     void move_selection(int delta) {
         if (items_.empty()) return;
@@ -175,9 +172,15 @@ private:
     }
 
     void scroll_by(int delta) {
-        int max_scroll = std::max(static_cast<int>(items_.size()) - visible_item_count(), 0);
-        scroll_offset_ = std::clamp(scroll_offset_ + delta, 0, max_scroll);
+        scroll_offset_ += delta;
+        clamp_scroll();
         need_repaint();
+    }
+
+    void clamp_scroll() {
+        int max_scroll = std::max(static_cast<int>(items_.size()) - visible_item_count(), 0);
+        scroll_offset_ = std::clamp(scroll_offset_, 0, max_scroll);
+        scroll_col_ = std::clamp(scroll_col_, 0, max_scroll_col());
     }
 
     void ensure_visible() {
@@ -187,8 +190,7 @@ private:
         if (static_cast<int>(selected_) >= scroll_offset_ + visible) {
             scroll_offset_ = static_cast<int>(selected_) - visible + 1;
         }
-        int max_scroll = std::max(static_cast<int>(items_.size()) - visible, 0);
-        scroll_offset_ = std::clamp(scroll_offset_, 0, max_scroll);
+        clamp_scroll();
     }
 
     [[nodiscard]] std::string item_prefix(size_t idx, const ListItem& item) const {
@@ -196,21 +198,47 @@ private:
         return prefix + (item.prefix_icon.empty() ? "" : item.prefix_icon + " ");
     }
 
+    /// Largeur maximale d'une ligne (pour le défilement horizontal).
+    [[nodiscard]] int row_max_width() const {
+        int w = 0;
+        for (size_t i = 0; i < items_.size(); ++i) {
+            const auto& it = items_[i];
+            int title = TextHelper::display_width(TextHelper::decode_utf8(item_prefix(i, it) + it.text));
+            if (style_ == ListViewStyle::Detailed) {
+                title += 2; // barre + retrait
+                if (!it.detail.empty())
+                    w = std::max(w, 2 + TextHelper::display_width(TextHelper::decode_utf8(it.detail)));
+            }
+            w = std::max(w, title);
+        }
+        return w;
+    }
+    [[nodiscard]] int max_scroll_col() const { return std::max(row_max_width() - content_width(), 0); }
+
+    /// Dessine `text` à partir de `start_x`, décalé de scroll_col_, tronqué à
+    /// [clip_left, clip_right).
+    void draw_text_clipped(Buffer& buffer, const std::u32string& text, int start_x, int y,
+                           int clip_left, int clip_right, Color fg, TextStyle style) const {
+        int x = start_x - scroll_col_;
+        for (char32_t ch : text) {
+            if (x >= clip_right) break;
+            if (x >= clip_left) buffer.set(x, y, Cell{ch, 1, fg, Color::Default(), style});
+            ++x;
+        }
+    }
+
     void paint_row_compact(Buffer& buffer, const ListItem& item, size_t idx, int y) const {
         std::string display = item_prefix(idx, item) + item.text;
         auto decoded = TextHelper::decode_utf8(display);
-        auto truncated = TextHelper::truncate_to_width(decoded, content_width());
         RowCursor cur = row_cursor(focused_);
         bool sel = cur.active && idx == selected_;
         TextStyle style = sel ? cur.style : TextStyle::None;
         Color fg = sel ? cur.fg : Color::Default(), bg = sel ? cur.bg : Color::Default();
-        int x = bounds_.x;
+        int left = bounds_.x;
+        int right = left + content_width();
         if (sel && cur.full_row)
-            for (int fx = x; fx < x + content_width(); ++fx) buffer.set(fx, y, Cell{U' ', 1, fg, bg, style});
-        for (char32_t ch : truncated) {
-            buffer.set(x, y, Cell{ch, 1, fg, bg, style});
-            ++x;
-        }
+            for (int fx = left; fx < right; ++fx) buffer.set(fx, y, Cell{U' ', 1, fg, bg, style});
+        draw_text_clipped(buffer, decoded, left, y, left, right, fg, style);
     }
 
     void paint_row_detailed(Buffer& buffer, const ListItem& item, size_t idx, int y) const {
@@ -219,42 +247,32 @@ private:
         Color title_color = selected ? accent_color_ : foreground_color_;
         Color detail_color = selected ? accent_color_ : muted_color_;
         TextStyle title_style = selected ? TextStyle::Bold : TextStyle::None;
-        int text_width = std::max(content_width() - 2, 0);
+        int left = bounds_.x;
+        int right = left + content_width();
 
         auto bar_cell = [&](char32_t ch, Color color) { return Cell{ch, 1, color, Color::Default(), TextStyle::None}; };
 
         if (bounds_.height > 0) {
-            buffer.set(bounds_.x, y, bar_cell(selected ? U'│' : U' ', bar_color));
-            std::string title_text = item_prefix(idx, item) + item.text;
-            auto decoded = TextHelper::decode_utf8(title_text);
-            auto truncated = TextHelper::truncate_to_width(decoded, text_width);
-            int x = bounds_.x + 2;
-            for (char32_t ch : truncated) {
-                buffer.set(x, y, Cell{ch, 1, title_color, Color::Default(), title_style});
-                ++x;
-            }
+            buffer.set(left, y, bar_cell(selected ? U'│' : U' ', bar_color));
+            auto decoded = TextHelper::decode_utf8(item_prefix(idx, item) + item.text);
+            draw_text_clipped(buffer, decoded, left + 2, y, left + 2, right, title_color, title_style);
         }
 
         int y1 = y + 1;
         if (!item.detail.empty() && y1 < bounds_.y + bounds_.height) {
-            buffer.set(bounds_.x, y1, bar_cell(selected ? U'│' : U' ', bar_color));
+            buffer.set(left, y1, bar_cell(selected ? U'│' : U' ', bar_color));
             auto decoded = TextHelper::decode_utf8(item.detail);
-            auto truncated = TextHelper::truncate_to_width(decoded, text_width);
-            int x = bounds_.x + 2;
-            for (char32_t ch : truncated) {
-                buffer.set(x, y1, Cell{ch, 1, detail_color, Color::Default(), TextStyle::None});
-                ++x;
-            }
+            draw_text_clipped(buffer, decoded, left + 2, y1, left + 2, right, detail_color, TextStyle::None);
         }
     }
 
     std::vector<ListItem> items_;
     size_t selected_ = 0;
     int scroll_offset_ = 0;
+    int scroll_col_ = 0;
     bool multi_select_ = false;
     std::set<size_t> multi_selected_;
     bool focused_ = false;
-    bool show_scrollbar_ = false;
     ListViewStyle style_ = ListViewStyle::Compact;
     Color accent_color_ = Color::Default();
     Color foreground_color_ = Color::Default();

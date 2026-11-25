@@ -158,7 +158,7 @@ public:
 class DoctorCommand : public Command {
 public:
     std::string GetName() const override { return "doctor"; }
-    std::string GetDescription() const override { return "Diagnostiquer configuration, outils, toolchains et #include"; }
+    std::string GetDescription() const override { return "Diagnostiquer configuration, outils, toolchains, #include et import de modules"; }
     std::string GetUsage() const override { return "[--fix] [--strict]"; }
     std::string GetDetails() const override {
         return "Vérifie : validité des fichiers toml (clés inconnues comprises), outils (ar, pkg-config,\n"

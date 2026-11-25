@@ -23,8 +23,10 @@
 #include "../Buffer.hpp"
 #include "../core/Text.hpp"
 
+#include <deque>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace tui {
 
@@ -40,6 +42,14 @@ public:
     [[nodiscard]] int cursor_col() const { return cursor_col_; }
     [[nodiscard]] int cols() const { return cols_; }
     [[nodiscard]] int rows() const { return rows_; }
+
+    // --- Scrollback (défilement) ---
+    /// Nombre de lignes conservées hors de l'écran (au-dessus du viewport).
+    [[nodiscard]] size_t scrollback_size() const { return scrollback_.size(); }
+    /// La `i`-ème ligne du scrollback (0 = la plus ancienne conservée).
+    [[nodiscard]] const std::vector<Cell>& scrollback_line(size_t i) const { return scrollback_[i]; }
+    /// Taille maximale du scrollback (défaut 1000 lignes).
+    void set_scrollback_max(size_t n) { scrollback_max_ = n; }
 
 private:
     void put_char(char32_t ch);
@@ -64,6 +74,9 @@ private:
     ParseState state_ = ParseState::Normal;
     std::string csi_buffer_;
     std::string buffer_; // octets non encore consommés (séquence/UTF-8 incomplets à cheval sur deux feed())
+
+    std::deque<std::vector<Cell>> scrollback_;
+    size_t scrollback_max_ = 1000;
 };
 
 } // namespace tui

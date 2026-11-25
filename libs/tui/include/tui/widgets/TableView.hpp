@@ -56,20 +56,36 @@ public:
         return c.clamp({c.max_width, c.max_height});
     }
 
+    [[nodiscard]] Size content_size() const override {
+        return {std::max(natural_total_width(), bounds_.width), row_count_ + 1};
+    }
+    [[nodiscard]] Point scroll_offset() const override { return {scroll_col_, scroll_offset_}; }
+    void set_scroll_offset(int x, int y) override {
+        scroll_offset_ = y;
+        scroll_col_ = x;
+        clamp_scroll();
+        need_repaint();
+    }
+
     void arrange(Rect final_rect) override {
         bounds_ = final_rect;
-        ensure_visible();
+        // Borne le défilement sans forcer la ligne sélectionnée visible.
+        clamp_scroll();
     }
 
     void paint(Buffer& buffer) const override {
         ClipGuard clip(buffer, bounds_);
         if (bounds_.height <= 0) return;
-        auto widths = compute_widths(bounds_.width);
-        paint_header(buffer, widths);
+        int viewport = content_width();
+        int natural_total = natural_total_width();
+        bool overflow = natural_total > viewport;
+        auto widths = overflow ? natural_widths() : compute_widths(viewport);
+        int hoff = overflow ? scroll_col_ : 0;
+        paint_header(buffer, widths, hoff);
         for (int row = 1; row < bounds_.height; ++row) {
             int data_row = scroll_offset_ + row - 1;
             if (data_row >= row_count_) continue;
-            paint_row(buffer, widths, data_row, bounds_.y + row);
+            paint_row(buffer, widths, data_row, bounds_.y + row, hoff);
         }
     }
 
@@ -94,6 +110,7 @@ public:
     /// sélectionnée) : on_activate. Molette : défilement.
     bool on_mouse(const MouseEvent& e) override {
         if (row_count_ == 0) return false;
+        if (handle_h_scroll_wheel(e)) return true;
         int viewport = std::max(bounds_.height - 1, 1);
         if (e.button == MouseEvent::Button::WheelUp || e.button == MouseEvent::Button::WheelDown) {
             int d = e.button == MouseEvent::Button::WheelUp ? -3 : 3;
@@ -101,6 +118,7 @@ public:
             need_repaint();
             return true;
         }
+        if (handle_scrollbar_mouse(e)) return true;
         if (e.button != MouseEvent::Button::Left || e.action != MouseEvent::Action::Press) return false;
         int row = e.y - bounds_.y - 1;   // ligne 0 = en-tête
         if (row < 0) return true;
@@ -113,13 +131,33 @@ public:
     }
 
 private:
+    void clamp_scroll() {
+        int viewport = std::max(bounds_.height - 1, 1);
+        int max_scroll = std::max(row_count_ - viewport, 0);
+        scroll_offset_ = std::clamp(scroll_offset_, 0, max_scroll);
+        scroll_col_ = std::clamp(scroll_col_, 0, max_scroll_col());
+    }
+
     void ensure_visible() {
         int viewport = std::max(bounds_.height - 1, 1);
         if (selected_row_ < scroll_offset_) scroll_offset_ = selected_row_;
         if (selected_row_ >= scroll_offset_ + viewport) scroll_offset_ = selected_row_ - viewport + 1;
-        int max_scroll = std::max(row_count_ - viewport, 0);
-        scroll_offset_ = std::clamp(scroll_offset_, 0, max_scroll);
+        clamp_scroll();
     }
+
+    /// Largeur naturelle totale des colonnes (valeur de chaque colonne).
+    [[nodiscard]] int natural_total_width() const {
+        int total = 0;
+        for (const auto& c : columns_) total += std::max(c.width.value, 0);
+        return total;
+    }
+    [[nodiscard]] std::vector<int> natural_widths() const {
+        std::vector<int> w;
+        w.reserve(columns_.size());
+        for (const auto& c : columns_) w.push_back(std::max(c.width.value, 0));
+        return w;
+    }
+    [[nodiscard]] int max_scroll_col() const { return std::max(natural_total_width() - content_width(), 0); }
 
     [[nodiscard]] std::vector<int> compute_widths(int total) const {
         int fixed_sum = 0, stretch_sum = 0;
@@ -147,30 +185,32 @@ private:
         return widths;
     }
 
-    void paint_header(Buffer& buffer, const std::vector<int>& widths) const {
-        int x = bounds_.x;
+    void paint_header(Buffer& buffer, const std::vector<int>& widths, int hoff) const {
+        int x = bounds_.x - hoff;
         for (size_t i = 0; i < columns_.size(); ++i) {
             auto decoded = TextHelper::decode_utf8(columns_[i].header);
             auto truncated = TextHelper::truncate_to_width(decoded, widths[i]);
             int cx = x;
             for (char32_t ch : truncated) {
-                buffer.set(cx, bounds_.y, Cell{ch, 1, Color::Default(), Color::Default(), TextStyle::Bold | TextStyle::Underline});
+                if (cx >= bounds_.x && cx < bounds_.x + content_width())
+                    buffer.set(cx, bounds_.y, Cell{ch, 1, Color::Default(), Color::Default(), TextStyle::Bold | TextStyle::Underline});
                 ++cx;
             }
             x += widths[i];
         }
     }
 
-    void paint_row(Buffer& buffer, const std::vector<int>& widths, int data_row, int y) const {
+    void paint_row(Buffer& buffer, const std::vector<int>& widths, int data_row, int y, int hoff) const {
         TextStyle style = (focused_ && data_row == selected_row_) ? TextStyle::Reverse : TextStyle::None;
-        int x = bounds_.x;
+        int x = bounds_.x - hoff;
         for (size_t col = 0; col < columns_.size(); ++col) {
             std::string text = accessor_ ? accessor_(data_row, static_cast<int>(col)) : "";
             auto decoded = TextHelper::decode_utf8(text);
             auto truncated = TextHelper::truncate_to_width(decoded, widths[col]);
             int cx = x;
             for (char32_t ch : truncated) {
-                buffer.set(cx, y, Cell{ch, 1, Color::Default(), Color::Default(), style});
+                if (cx >= bounds_.x && cx < bounds_.x + content_width())
+                    buffer.set(cx, y, Cell{ch, 1, Color::Default(), Color::Default(), style});
                 ++cx;
             }
             x += widths[col];
@@ -182,6 +222,7 @@ private:
     CellAccessor accessor_;
     int selected_row_ = 0;
     int scroll_offset_ = 0;
+    int scroll_col_ = 0;
     bool focused_ = false;
     std::function<void(int)> on_activate_;
 };

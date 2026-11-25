@@ -7,6 +7,8 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <format>
+#include <iterator>
 
 #include <poll.h>
 #include <sys/eventfd.h>
@@ -200,39 +202,40 @@ std::optional<Event> PosixTerminalBackend::poll_event(std::chrono::milliseconds 
     }
 }
 
-std::string PosixTerminalBackend::sgr_sequence(const Cell& cell) const {
-    std::string seq = "0";
-    if (has_style(cell.style, TextStyle::Bold)) seq += ";1";
-    if (has_style(cell.style, TextStyle::Dim)) seq += ";2";
-    if (has_style(cell.style, TextStyle::Italic)) seq += ";3";
-    if (has_style(cell.style, TextStyle::Underline)) seq += ";4";
-    if (has_style(cell.style, TextStyle::Blink)) seq += ";5";
-    if (has_style(cell.style, TextStyle::Reverse)) seq += ";7";
-    if (has_style(cell.style, TextStyle::Strikethrough)) seq += ";9";
+void PosixTerminalBackend::append_cell_sequence(const Cell& cell, int x, int y) {
+    // Écrit la séquence d'échappement complète d'une cellule directement
+    // dans output_buffer_, sans chaîne temporaire ni std::to_string : c'est
+    // le chemin le plus chaud du rendu (une cellule par cellule redessinée,
+    // tout l'écran à chaque défilement du terminal intégré).
+    std::format_to(std::back_inserter(output_buffer_), "\x1b[{};{}H\x1b[0", y + 1, x + 1);
+
+    if (has_style(cell.style, TextStyle::Bold)) output_buffer_ += ";1";
+    if (has_style(cell.style, TextStyle::Dim)) output_buffer_ += ";2";
+    if (has_style(cell.style, TextStyle::Italic)) output_buffer_ += ";3";
+    if (has_style(cell.style, TextStyle::Underline)) output_buffer_ += ";4";
+    if (has_style(cell.style, TextStyle::Blink)) output_buffer_ += ";5";
+    if (has_style(cell.style, TextStyle::Reverse)) output_buffer_ += ";7";
+    if (has_style(cell.style, TextStyle::Strikethrough)) output_buffer_ += ";9";
 
     if (!cell.fg.is_default) {
-        if (true_color_) {
-            seq += ";38;2;" + std::to_string(cell.fg.r) + ";" + std::to_string(cell.fg.g) + ";" + std::to_string(cell.fg.b);
-        } else {
-            seq += ";38;5;" + std::to_string(quantize_to_256(cell.fg));
-        }
+        if (true_color_)
+            std::format_to(std::back_inserter(output_buffer_), ";38;2;{};{};{}", cell.fg.r, cell.fg.g, cell.fg.b);
+        else
+            std::format_to(std::back_inserter(output_buffer_), ";38;5;{}", quantize_to_256(cell.fg));
     }
     if (!cell.bg.is_default) {
-        if (true_color_) {
-            seq += ";48;2;" + std::to_string(cell.bg.r) + ";" + std::to_string(cell.bg.g) + ";" + std::to_string(cell.bg.b);
-        } else {
-            seq += ";48;5;" + std::to_string(quantize_to_256(cell.bg));
-        }
+        if (true_color_)
+            std::format_to(std::back_inserter(output_buffer_), ";48;2;{};{};{}", cell.bg.r, cell.bg.g, cell.bg.b);
+        else
+            std::format_to(std::back_inserter(output_buffer_), ";48;5;{}", quantize_to_256(cell.bg));
     }
-    return "\x1b[" + seq + "m";
+    output_buffer_ += 'm';
+    TextHelper::append_utf8(output_buffer_, cell.codepoint);
 }
 
 void PosixTerminalBackend::draw_cell(int x, int y, const Cell& cell) {
     if (cell.width == 0) return; // cellule de continuation d'un glyphe large : rien à dessiner
-
-    output_buffer_ += "\x1b[" + std::to_string(y + 1) + ";" + std::to_string(x + 1) + "H";
-    output_buffer_ += sgr_sequence(cell);
-    output_buffer_ += TextHelper::encode_utf8(std::u32string(1, cell.codepoint));
+    append_cell_sequence(cell, x, y);
 }
 
 void PosixTerminalBackend::flush() {
@@ -252,6 +255,42 @@ void PosixTerminalBackend::write_raw(std::string_view s) {
 
 void PosixTerminalBackend::clear_screen() {
     write_raw("\x1b[2J\x1b[H");
+}
+
+void PosixTerminalBackend::write_clipboard(std::string_view text) {
+    // OSC 52 : copie vers le presse-papiers du terminal (donc du bureau).
+    // Ignoré silencieusement par les terminaux qui ne le supportent pas.
+    static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(4 + ((text.size() + 2) / 3) * 4 + 2);
+    out += "\x1b]52;c;";
+    size_t i = 0;
+    while (i + 2 < text.size()) {
+        uint32_t v = (static_cast<uint32_t>(static_cast<unsigned char>(text[i])) << 16) |
+                     (static_cast<uint32_t>(static_cast<unsigned char>(text[i + 1])) << 8) |
+                     static_cast<uint32_t>(static_cast<unsigned char>(text[i + 2]));
+        out += kAlphabet[(v >> 18) & 0x3F];
+        out += kAlphabet[(v >> 12) & 0x3F];
+        out += kAlphabet[(v >> 6) & 0x3F];
+        out += kAlphabet[v & 0x3F];
+        i += 3;
+    }
+    if (i + 1 == text.size()) {
+        uint32_t v = static_cast<uint32_t>(static_cast<unsigned char>(text[i])) << 16;
+        out += kAlphabet[(v >> 18) & 0x3F];
+        out += kAlphabet[(v >> 12) & 0x3F];
+        out += "==";
+    } else if (i + 2 == text.size()) {
+        uint32_t v = (static_cast<uint32_t>(static_cast<unsigned char>(text[i])) << 16) |
+                     (static_cast<uint32_t>(static_cast<unsigned char>(text[i + 1])) << 8);
+        out += kAlphabet[(v >> 18) & 0x3F];
+        out += kAlphabet[(v >> 12) & 0x3F];
+        out += kAlphabet[(v >> 6) & 0x3F];
+        out += '=';
+    }
+    out += "\x1b\\";
+    write_raw(out);
+    flush();
 }
 
 void PosixTerminalBackend::set_cursor_visible(bool visible) {

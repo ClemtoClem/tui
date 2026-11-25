@@ -26,6 +26,16 @@ struct TextHelper {
     /// Ré-encode une séquence de codepoints en UTF-8.
     [[nodiscard]] static std::string encode_utf8(std::u32string_view s);
 
+    /// Ré-encode un unique codepoint en UTF-8 (sans construire de
+    /// std::u32string) ; utilisé sur le chemin de rendu (une cellule à la
+    /// fois) pour éviter une allocation par caractère.
+    [[nodiscard]] static std::string encode_utf8(char32_t cp);
+
+    /// Ajoute l'encodage UTF-8 d'un unique codepoint à `out`, sans
+    /// allocation intermédiaire (le chemin de rendu d'un terminal réel
+    /// l'appelle pour chaque cellule redessinée).
+    static void append_utf8(std::string& out, char32_t cp);
+
     /// Largeur d'affichage d'un codepoint : 0 (combinant / zéro-largeur /
     /// contrôle), 1 (largeur normale) ou 2 (CJK large / pleine largeur).
     [[nodiscard]] static int codepoint_width(char32_t cp);

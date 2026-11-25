@@ -25,9 +25,18 @@
 #include "model/Editor.hpp"
 #include "model/Schema.hpp"
 #include "model/Workspace.hpp"
+#include "ui/DiffView.hpp"
 #include "ui/Form.hpp"
+#include "ui/GitGraph.hpp"
 #include "ui/Widgets.hpp"
+#include "vcs/Backup.hpp"
+#include "vcs/Blame.hpp"
+#include "vcs/Diff.hpp"
 #include "vcs/Git.hpp"
+#include "vcs/History.hpp"
+#include "vcs/Operations.hpp"
+#include "vcs/Stash.hpp"
+#include "vcs/Worktree.hpp"
 
 #include <tui/App.hpp>
 #include <tui/core/SyntaxHighlight.hpp>
@@ -50,6 +59,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <future>
 #include <map>
 #include <set>
 
@@ -347,6 +357,7 @@ private:
     std::shared_ptr<tui::Horizontal> actions_;
     std::shared_ptr<tui::Vertical> actions_host_;
     std::shared_ptr<tui::ScrollableVertical> form_host_;
+    std::shared_ptr<tui::Border> params_frame_;
     std::unique_ptr<Form> form_;
     fs::path form_file_;
     std::string current_id_;
@@ -363,9 +374,33 @@ private:
 
     // --- Git
     std::shared_ptr<tui::Widget> git_page_;
+    std::shared_ptr<tui::Tabs> git_tabs_;
+    std::shared_ptr<GitGraph> git_graph_;
     std::shared_ptr<NavTree> git_nav_;
     std::shared_ptr<tui::Label> git_branch_;
     std::shared_ptr<TextBlock> git_info_;
+    std::shared_ptr<TextBlock> git_details_;
+    std::shared_ptr<tui::ListView> git_backups_;
+    std::vector<vcs::BackupEntry> backups_;
+    std::shared_ptr<DiffView> git_diff_view_;
+    bool git_diff_staged_ = false;
+    std::shared_ptr<tui::ListView> git_branches_;
+    std::vector<std::string> branches_;
+    std::string git_branch_current_;
+    std::shared_ptr<tui::ListView> git_tags_;
+    std::vector<std::string> tags_;
+    std::shared_ptr<tui::ListView> git_remotes_;
+    std::vector<std::string> remotes_;
+    std::vector<std::string> conflicts_;
+    std::string conflict_op_;
+    std::vector<std::future<void>> async_tasks_;
+    std::shared_ptr<tui::ListView> git_reflog_;
+    std::vector<vcs::ReflogEntry> reflog_;
+    bool git_hunks_staged_ = false;
+    std::shared_ptr<tui::ListView> git_stash_;
+    std::vector<vcs::StashEntry> stash_;
+    std::shared_ptr<tui::ListView> git_worktrees_;
+    std::vector<vcs::WorktreeEntry> worktrees_;
     std::map<std::string, std::vector<fs::path>> git_paths_;   ///< élément → fichiers
     bool git_repo_ = false;
 
@@ -377,7 +412,7 @@ private:
     };
     std::vector<RuleNode> rule_nodes_;
     std::shared_ptr<tui::Terminal> term_;
-    std::shared_ptr<ChoiceField> opt_mode_, opt_tc_, opt_target_, opt_san_, opt_verbose_, opt_keep_;
+    std::shared_ptr<ChoiceField> opt_mode_, opt_tc_, opt_target_, opt_san_, opt_verbose_, opt_keep_, opt_twidth_;
     std::shared_ptr<FormInput> cmdline_;
     bool term_ready_ = false;
 
@@ -489,7 +524,8 @@ private:
         right->add_child(desc_, LayoutParams::fixed(2));
         right->add_child(actions_host_, LayoutParams::fixed(1));
         right->add_child(label(""), LayoutParams::fixed(1));
-        right->add_child(framed(form_host_, "Paramètres"), LayoutParams::stretch(1));
+        params_frame_ = framed(form_host_, "Paramètres");
+        right->add_child(params_frame_, LayoutParams::stretch(1));
         right->add_child(help_, LayoutParams::fixed(2));
         right->set_inline_style("padding: 0 1");
 
@@ -523,6 +559,17 @@ private:
         opt_verbose_->set_choices({"", "-v"}, {"non", "oui"});
         opt_keep_ = std::make_shared<ChoiceField>();
         opt_keep_->set_choices({"", "-k"}, {"non", "oui"});
+        // Largeur logique du terminal : vide = largeur d'affichage (repli),
+        // sinon une valeur fixe qui active le défilement horizontal.
+        opt_twidth_ = std::make_shared<ChoiceField>();
+        opt_twidth_->set_choices({"", "100", "120", "160", "200", "240"},
+                                 {"auto (largeur d'affichage)", "100 colonnes", "120 colonnes", "160 colonnes", "200 colonnes", "240 colonnes"});
+        opt_twidth_->set_tooltip("Largeur logique du terminal : « auto » replie à la largeur d'affichage ; "
+                                 "une valeur fixe (ex. 160) active le défilement horizontal (barre + Maj+molette).");
+        opt_twidth_->set_on_change([this](const std::string& v) {
+            int w = v.empty() ? 0 : std::atoi(v.c_str());
+            term_->set_content_width(w);
+        });
 
         auto left = std::make_shared<tui::Vertical>();
         left->add_class("commands");
@@ -538,6 +585,7 @@ private:
         opt_row("Sanitizers", opt_san_);
         opt_row("Verbeux", opt_verbose_);
         opt_row("Continuer", opt_keep_);
+        opt_row("Largeur term.", opt_twidth_);
         left->add_child(label(""), LayoutParams::fixed(1));
         struct B { const char* label; const char* cmd; };
         for (auto b : {B{"Compiler        F5", "build"}, B{"Exécuter        F6", "run"}, B{"Tester          F7", "test"},
@@ -569,14 +617,24 @@ private:
     }
 
     void build_git_page() {
+        git_graph_ = std::make_shared<GitGraph>();
+        git_graph_->set_on_select([this](const vcs::CommitRef& c) { git_show_commit(c); });
+        git_graph_->set_on_activate([this](const vcs::CommitRef& c) { git_show_commit(c); });
+        git_graph_->set_on_context([this](const vcs::CommitRef& c) { show_commit_menu(c); });
         git_nav_ = std::make_shared<NavTree>();
         git_nav_->set_on_activate([this](const std::string&) { git_toggle_selected(); });
         git_branch_ = label("", Tone::Accent);
         git_branch_->set_inline_style("text-style: bold; padding: 0 1");
         git_info_ = text_block("", Tone::Muted);
+        git_details_ = text_block("", Tone::Muted);
 
+        // --- Onglet « Historique » : graphe + détails du commit sélectionné.
+        auto hist = std::make_shared<tui::Vertical>();
+        hist->add_child(framed(git_graph_, "Historique"), LayoutParams::stretch(1));
+        hist->add_child(framed(git_details_, "Détails"), LayoutParams::fixed(5));
+
+        // --- Onglet « Modifications » : staging par layer/module (existant).
         auto left = std::make_shared<tui::Vertical>();
-        left->add_child(git_branch_, LayoutParams::fixed(1));
         left->add_child(framed(git_nav_, "Modifications (Entrée : indexer / désindexer)"), LayoutParams::stretch(1));
 
         auto right = std::make_shared<tui::Vertical>();
@@ -586,12 +644,16 @@ private:
             {"Indexer la sélection", [this] { git_stage_selected(true); }},
             {"Désindexer la sélection", [this] { git_stage_selected(false); }},
             {"Tout indexer", [this] { git_stage_all(); }},
+            {"Staging partiel (hunks)…", [this] { git_hunks_dialog(); }},
             {"Valider (commit)…", [this] { git_commit_dialog(); }},
+            {"Résoudre les conflits…", [this] { git_resolve_conflicts(); }},
+            {"Annuler merge/rebase", [this] { git_abort_operation(); }},
             {"Simuler le pre-commit", [this] { run_in_terminal("git pre-commit -n", false); }},
             {"Pre-commit sur tout", [this] { run_in_terminal("git pre-commit --all", false); }},
             {"Règles pre-commit…", [this] { switch_tab(kTabConfig); nav_->select_id("group:rules"); show_node("group:rules"); }},
             {"Journal", [this] { run_in_terminal("git log" + git_selected_target(), false); }},
             {"Différences", [this] { run_in_terminal("git diff" + git_selected_target(), false); }},
+            {"Blame (annotations)", [this] { git_blame_selected(); }},
             {"Pousser (push)", [this] { run_in_terminal("git push", false); }},
             {"Tirer (pull)", [this] { run_in_terminal("git pull", false); }},
             {"Installer le crochet", [this] { run_self({"git", "hook", "install"}, current_id_); refresh_git(); }},
@@ -606,10 +668,202 @@ private:
         right->add_child(label(""), LayoutParams::fixed(1));
         right->add_child(git_info_, LayoutParams::stretch(1));
 
-        auto row = std::make_shared<tui::Horizontal>();
-        row->add_child(left, LayoutParams::stretch(1));
-        row->add_child(framed(right, "Actions"), LayoutParams::fixed(44));
-        git_page_ = row;
+        auto changes = std::make_shared<tui::Horizontal>();
+        changes->add_child(left, LayoutParams::stretch(1));
+        changes->add_child(framed(right, "Actions"), LayoutParams::fixed(44));
+
+        // --- Onglet « Sauvegardes » : stash de cpp-maker (restauration du travail).
+        git_backups_ = std::make_shared<tui::ListView>();
+        git_backups_->set_on_activate([this](size_t i) { git_restore_backup(static_cast<int>(i)); });
+        auto bk_buttons = std::make_shared<tui::Horizontal>();
+        bk_buttons->add_class("actions");
+        bk_buttons->add_child(button("Restaurer", [this] {
+            if (auto i = git_backups_->selected_index(); i < backups_.size()) git_restore_backup(static_cast<int>(i));
+        }, "-primary"), LayoutParams::auto_size());
+        bk_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        bk_buttons->add_child(button("Prévisualiser", [this] {
+            if (auto i = git_backups_->selected_index(); i < backups_.size()) git_preview_backup(static_cast<int>(i));
+        }), LayoutParams::auto_size());
+        bk_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        bk_buttons->add_child(button("Supprimer", [this] {
+            if (auto i = git_backups_->selected_index(); i < backups_.size()) git_drop_backup(static_cast<int>(i));
+        }, "-error"), LayoutParams::auto_size());
+        bk_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        bk_buttons->add_child(button("Actualiser", [this] { refresh_backups(); }), LayoutParams::auto_size());
+        bk_buttons->add_child(label(""), LayoutParams::stretch(1));
+        auto backups = std::make_shared<tui::Vertical>();
+        backups->add_child(framed(git_backups_, "Sauvegardes (stash)"), LayoutParams::stretch(1));
+        backups->add_child(bk_buttons, LayoutParams::fixed(1));
+
+        // --- Onglet « Diff » : différences du travail courant (indexé/non indexé).
+        git_diff_view_ = std::make_shared<DiffView>();
+        auto diff_buttons = std::make_shared<tui::Horizontal>();
+        diff_buttons->add_class("actions");
+        diff_buttons->add_child(button(git_diff_staged_ ? "◉ Indexé" : "○ Non indexé", [this] {
+            git_diff_staged_ = !git_diff_staged_;
+            refresh_diff();
+        }), LayoutParams::auto_size());
+        diff_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        diff_buttons->add_child(button("Actualiser", [this] { refresh_diff(); }), LayoutParams::auto_size());
+        diff_buttons->add_child(label(""), LayoutParams::stretch(1));
+        auto difftab = std::make_shared<tui::Vertical>();
+        difftab->add_child(framed(git_diff_view_, "Diff du travail courant"), LayoutParams::stretch(1));
+        difftab->add_child(diff_buttons, LayoutParams::fixed(1));
+
+        // --- Onglet « Branches » : liste des branches locales + distantes.
+        git_branches_ = std::make_shared<tui::ListView>();
+        git_branches_->set_on_activate([this](size_t i) { git_checkout_branch(static_cast<int>(i)); });
+        auto br_buttons = std::make_shared<tui::Horizontal>();
+        br_buttons->add_class("actions");
+        br_buttons->add_child(button("Basculer", [this] {
+            if (auto i = git_branches_->selected_index(); i < branches_.size()) git_checkout_branch(static_cast<int>(i));
+        }, "-primary"), LayoutParams::auto_size());
+        br_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        br_buttons->add_child(button("Comparer", [this] {
+            if (auto i = git_branches_->selected_index(); i < branches_.size()) git_compare_branch(git_branch_name(i));
+        }), LayoutParams::auto_size());
+        br_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        br_buttons->add_child(button("Supprimer", [this] {
+            if (auto i = git_branches_->selected_index(); i < branches_.size()) git_delete_branch(git_branch_name(i));
+        }, "-error"), LayoutParams::auto_size());
+        br_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        br_buttons->add_child(button("Pousser", [this] {
+            if (auto i = git_branches_->selected_index(); i < branches_.size()) git_push_branch(git_branch_name(i));
+        }), LayoutParams::auto_size());
+        br_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        br_buttons->add_child(button("Suppr. distante", [this] {
+            if (auto i = git_branches_->selected_index(); i < branches_.size()) git_push_delete_branch_prompt(git_branch_name(i));
+        }, "-error"), LayoutParams::auto_size());
+        br_buttons->add_child(label(""), LayoutParams::stretch(1));
+        auto branchestab = std::make_shared<tui::Vertical>();
+        branchestab->add_child(framed(git_branches_, "Branches"), LayoutParams::stretch(1));
+        branchestab->add_child(br_buttons, LayoutParams::fixed(1));
+
+        // --- Onglet « Tags » : liste des tags.
+        git_tags_ = std::make_shared<tui::ListView>();
+        auto tg_buttons = std::make_shared<tui::Horizontal>();
+        tg_buttons->add_class("actions");
+        tg_buttons->add_child(button("Supprimer", [this] {
+            if (auto i = git_tags_->selected_index(); i < tags_.size()) git_delete_tag(tags_[i]);
+        }, "-error"), LayoutParams::auto_size());
+        tg_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        tg_buttons->add_child(button("Pousser", [this] {
+            if (auto i = git_tags_->selected_index(); i < tags_.size()) git_push_tag(tags_[i]);
+        }), LayoutParams::auto_size());
+        tg_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        tg_buttons->add_child(button("Suppr. distant", [this] {
+            if (auto i = git_tags_->selected_index(); i < tags_.size()) git_push_delete_tag_prompt(tags_[i]);
+        }, "-error"), LayoutParams::auto_size());
+        tg_buttons->add_child(label(""), LayoutParams::stretch(1));
+        auto tagstab = std::make_shared<tui::Vertical>();
+        tagstab->add_child(framed(git_tags_, "Tags"), LayoutParams::stretch(1));
+        tagstab->add_child(tg_buttons, LayoutParams::fixed(1));
+
+        // --- Onglet « Remotes » : gestion des dépôts distants.
+        git_remotes_ = std::make_shared<tui::ListView>();
+        auto rem_buttons = std::make_shared<tui::Horizontal>();
+        rem_buttons->add_class("actions");
+        rem_buttons->add_child(button("Ajouter", [this] { git_add_remote_prompt(); }), LayoutParams::auto_size());
+        rem_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        rem_buttons->add_child(button("Supprimer", [this] {
+            if (auto i = git_remotes_->selected_index(); i < remotes_.size()) git_remove_remote_prompt(remotes_[i]);
+        }, "-error"), LayoutParams::auto_size());
+        rem_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        rem_buttons->add_child(button("URL", [this] {
+            if (auto i = git_remotes_->selected_index(); i < remotes_.size()) git_set_remote_url_prompt(remotes_[i]);
+        }), LayoutParams::auto_size());
+        rem_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        rem_buttons->add_child(button("Fetch", [this] { git_fetch(); }), LayoutParams::auto_size());
+        rem_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        rem_buttons->add_child(button("Prune", [this] { git_prune(); }), LayoutParams::auto_size());
+        rem_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        rem_buttons->add_child(button("Pull", [this] { git_pull(); }), LayoutParams::auto_size());
+        rem_buttons->add_child(label(""), LayoutParams::stretch(1));
+        auto remotestab = std::make_shared<tui::Vertical>();
+        remotestab->add_child(framed(git_remotes_, "Remotes"), LayoutParams::stretch(1));
+        remotestab->add_child(rem_buttons, LayoutParams::fixed(1));
+
+        // --- Onglet « Reflog » : anciens HEAD, récupération de commits.
+        git_reflog_ = std::make_shared<tui::ListView>();
+        auto refl_buttons = std::make_shared<tui::Horizontal>();
+        refl_buttons->add_class("actions");
+        refl_buttons->add_child(button("Restaurer (checkout)", [this] {
+            if (auto i = git_reflog_->selected_index(); i < reflog_.size()) git_reflog_checkout(static_cast<int>(i));
+        }, "-primary"), LayoutParams::auto_size());
+        refl_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        refl_buttons->add_child(button("Reset (soft)", [this] {
+            if (auto i = git_reflog_->selected_index(); i < reflog_.size()) git_reflog_reset(static_cast<int>(i));
+        }), LayoutParams::auto_size());
+        refl_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        refl_buttons->add_child(button("Actualiser", [this] { refresh_reflog(); }), LayoutParams::auto_size());
+        refl_buttons->add_child(label(""), LayoutParams::stretch(1));
+        auto reflogtab = std::make_shared<tui::Vertical>();
+        reflogtab->add_child(framed(git_reflog_, "Reflog (anciens HEAD)"), LayoutParams::stretch(1));
+        reflogtab->add_child(refl_buttons, LayoutParams::fixed(1));
+
+        // --- Onglet « Stash » : pile de stash native de git.
+        git_stash_ = std::make_shared<tui::ListView>();
+        git_stash_->set_on_activate([this](size_t i) { git_stash_apply(static_cast<int>(i)); });
+        auto st_buttons = std::make_shared<tui::Horizontal>();
+        st_buttons->add_class("actions");
+        st_buttons->add_child(button("Remiser (stash)…", [this] { git_stash_push_prompt(); }), LayoutParams::auto_size());
+        st_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        st_buttons->add_child(button("Appliquer", [this] {
+            if (auto i = git_stash_->selected_index(); i < stash_.size()) git_stash_apply(static_cast<int>(i));
+        }, "-primary"), LayoutParams::auto_size());
+        st_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        st_buttons->add_child(button("Dépiler (pop)", [this] {
+            if (auto i = git_stash_->selected_index(); i < stash_.size()) git_stash_pop(static_cast<int>(i));
+        }), LayoutParams::auto_size());
+        st_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        st_buttons->add_child(button("Prévisualiser", [this] {
+            if (auto i = git_stash_->selected_index(); i < stash_.size()) git_stash_preview(static_cast<int>(i));
+        }), LayoutParams::auto_size());
+        st_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        st_buttons->add_child(button("Supprimer", [this] {
+            if (auto i = git_stash_->selected_index(); i < stash_.size()) git_stash_drop(static_cast<int>(i));
+        }, "-error"), LayoutParams::auto_size());
+        st_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        st_buttons->add_child(button("Actualiser", [this] { refresh_stash(); }), LayoutParams::auto_size());
+        st_buttons->add_child(label(""), LayoutParams::stretch(1));
+        auto stashtab = std::make_shared<tui::Vertical>();
+        stashtab->add_child(framed(git_stash_, "Stash"), LayoutParams::stretch(1));
+        stashtab->add_child(st_buttons, LayoutParams::fixed(1));
+
+        // --- Onglet « Worktrees » : copies de travail liées au dépôt.
+        git_worktrees_ = std::make_shared<tui::ListView>();
+        auto wt_buttons = std::make_shared<tui::Horizontal>();
+        wt_buttons->add_class("actions");
+        wt_buttons->add_child(button("Ajouter…", [this] { git_worktree_add_prompt(); }), LayoutParams::auto_size());
+        wt_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        wt_buttons->add_child(button("Supprimer", [this] {
+            if (auto i = git_worktrees_->selected_index(); i < worktrees_.size()) git_worktree_remove(static_cast<int>(i));
+        }, "-error"), LayoutParams::auto_size());
+        wt_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        wt_buttons->add_child(button("Élaguer (prune)", [this] { git_worktree_prune(); }), LayoutParams::auto_size());
+        wt_buttons->add_child(label(" "), LayoutParams::fixed(1));
+        wt_buttons->add_child(button("Actualiser", [this] { refresh_worktrees(); }), LayoutParams::auto_size());
+        wt_buttons->add_child(label(""), LayoutParams::stretch(1));
+        auto worktreestab = std::make_shared<tui::Vertical>();
+        worktreestab->add_child(framed(git_worktrees_, "Worktrees"), LayoutParams::stretch(1));
+        worktreestab->add_child(wt_buttons, LayoutParams::fixed(1));
+
+        git_tabs_ = std::make_shared<tui::Tabs>();
+        git_tabs_->add_tab("Historique", hist);
+        git_tabs_->add_tab("Modifications", changes);
+        git_tabs_->add_tab("Diff", difftab);
+        git_tabs_->add_tab("Branches", branchestab);
+        git_tabs_->add_tab("Tags", tagstab);
+        git_tabs_->add_tab("Remotes", remotestab);
+        git_tabs_->add_tab("Reflog", reflogtab);
+        git_tabs_->add_tab("Sauvegardes", backups);
+        git_tabs_->add_tab("Stash", stashtab);
+        git_tabs_->add_tab("Worktrees", worktreestab);
+
+        auto page = std::make_shared<tui::Vertical>();
+        page->add_child(git_branch_, LayoutParams::fixed(1));
+        page->add_child(git_tabs_, LayoutParams::stretch(1));
+        git_page_ = page;
     }
 
     // ========================================================================
@@ -663,6 +917,8 @@ private:
         for (auto& [n, d] : p.deploys) items.push_back({"deploy:" + n, n, 2, Tone::Normal, d.method});
         items.push_back({"group:generate", "Génération de code", 1, Tone::Info, std::to_string(p.generate.size())});
         for (auto& g : p.generate) items.push_back({"generate:" + g.name, g.name, 2, Tone::Normal, ""});
+        items.push_back({"group:commands", "Commandes", 1, Tone::Info, std::to_string(p.commands.size())});
+        for (auto& [n, c] : p.commands) items.push_back({"command:" + n, n, 2, Tone::Normal, ""});
         rule_nodes_.clear();
         auto rules = vcs::all_rules(ws);
         items.push_back({"group:rules", "Règles pre-commit", 1, Tone::Info, std::to_string(rules.size())});
@@ -763,6 +1019,7 @@ private:
     }
 
     void set_form(schema::FileKind kind, const fs::path& file, std::vector<FormSection> sections, std::set<std::string> hidden = {}) {
+        params_frame_->set_title(" Paramètres ");
         form_ = std::make_unique<Form>(kind, std::move(sections), std::move(hidden));
         form_file_ = file;
         form_->set_on_help([this](const std::string& h) { help_->set_text(h); });
@@ -781,11 +1038,25 @@ private:
     }
 
     void clear_form(const std::string& text = {}) {
+        params_frame_->set_title(" Paramètres ");
         form_.reset();
         form_file_.clear();
         auto v = std::make_shared<tui::Vertical>();
         v->add_child(text_block(text, Tone::Muted), LayoutParams::stretch(1));
         form_host_->set_child(v);
+    }
+
+    /// Affiche un fichier Markdown (README…) en lecture seule, coloré et
+    /// sélectionnable, dans l'encadrement renommé « Lecture de <chemin> ».
+    void show_readme(const fs::path& file) {
+        params_frame_->set_title(" Lecture de " + util::display(file, root_) + " ");
+        form_.reset();
+        form_file_.clear();
+        std::string text;
+        util::read_file(file, text);
+        auto view = std::make_shared<MarkdownView>(std::move(text));
+        form_host_->set_child(view);
+        form_host_->scroll_to(0, 0);
     }
 
     void show_node(const std::string& id) {
@@ -824,7 +1095,9 @@ private:
             desc_->set_text(util::display(file, root_) + (fs::exists(file, ec) ? "" : "  (nouveau)"));
             set_tone(*desc_, Tone::Muted);
             set_actions({{"Éditer (F3)", [this] { switch_tab(kTabToml); }}});
-            clear_form("README de cet élément — éditez-le dans l'onglet « Fichier TOML » (F3), puis Ctrl+S pour enregistrer.");
+            // Lecture seule, mis en forme et sélectionnable (copier) dans
+            // l'encadrement renommé « Lecture de … ».
+            show_readme(file);
             open_in_editor(file);
             return;
         }
@@ -918,6 +1191,22 @@ private:
             desc_->set_text("Exécutée depuis la racine du projet ; « always » la relance à chaque fois.");
             set_actions({{"Supprimer", [this, key] { remove_table("generate." + key, "étape " + key); }}});
             set_form(P, p.file, {{{"generate", key}, "generate.*", ""}});
+            open_in_editor(p.file);
+            return;
+        }
+        if (id == "group:commands") {
+            title_->set_text("Commandes personnalisées");
+            desc_->set_text("Scripts exécutés par « cpp-maker cmd <nom> » depuis la racine du projet.");
+            set_actions({{"+ Commande", [this] { add_command(); }}, {"Liste", run_btn("cmd list")}});
+            return clear_form("Choisissez une commande à gauche, ou créez-en une.");
+        }
+        if (id.starts_with("command:")) {
+            title_->set_text("Commande " + key);
+            auto it = p.commands.find(key);
+            desc_->set_text(it == p.commands.end() ? "" : it->second.command);
+            set_actions({{"Exécuter", [this, key] { run_in_terminal("cmd " + key, false); }},
+                         {"Supprimer", [this, key] { remove_table("commands." + key, "commande " + key); }}});
+            set_form(P, p.file, {{{"commands", key}, "commands.*", ""}});
             open_in_editor(p.file);
             return;
         }
@@ -1287,7 +1576,8 @@ private:
                    if (v[0] != "oui") return false;
                    std::string group = dotted.starts_with("build.modes") ? "group:modes"
                                        : dotted.starts_with("toolchains") ? "group:toolchains"
-                                       : dotted.starts_with("deploy") ? "group:deploys" : "group:generate";
+                                       : dotted.starts_with("deploy") ? "group:deploys"
+                                       : dotted.starts_with("commands") ? "group:commands" : "group:generate";
                    return run_self({"config", "unset", dotted}, group);
                });
     }
@@ -1307,13 +1597,17 @@ private:
     void add_toolchain() {
         prompt("Nouvelle toolchain",
                {{"Nom", "", {}}, {"Préfixe (croisée)", "", {}}, {"Compilateur C", "", {}}, {"Compilateur C++", "", {}},
-                {"Famille", "auto", {"auto", "gcc", "clang"}}},
+                {"Famille", "auto", {"auto", "gcc", "clang"}}, {"Triplet clang (--target)", "", {}},
+                {"Sysroot", "", {}}, {"Émulateur (runner)", "", {}}},
                [this](const std::vector<std::string>& v) {
                    std::vector<std::string> a = {"toolchain", "add", v[0]};
                    if (!v[1].empty()) a.insert(a.end(), {"--prefix", v[1]});
                    if (!v[2].empty()) a.insert(a.end(), {"--cc", v[2]});
                    if (!v[3].empty()) a.insert(a.end(), {"--cxx", v[3]});
                    if (v[4] != "auto") a.insert(a.end(), {"--family", v[4]});
+                   if (!v[5].empty()) a.insert(a.end(), {"--target", v[5]});
+                   if (!v[6].empty()) a.insert(a.end(), {"--sysroot", v[6]});
+                   if (!v[7].empty()) a.insert(a.end(), {"--runner", v[7]});
                    return run_self(a, "toolchain:" + v[0]);
                });
     }
@@ -1341,6 +1635,17 @@ private:
                    if (!v[2].empty()) a.push_back(base + "inputs=" + v[2]);
                    if (!v[3].empty()) a.push_back(base + "outputs=" + v[3]);
                    return run_self(a, "generate:" + v[0]);
+               });
+    }
+
+    void add_command() {
+        prompt("Nouvelle commande personnalisée",
+               {{"Nom", "", {}}, {"Commande", "", {}}, {"Description", "", {}}},
+               [this](const std::vector<std::string>& v) {
+                   std::string base = "commands." + v[0] + ".";
+                   std::vector<std::string> a = {"config", "set", base + "command=" + v[1]};
+                   if (!v[2].empty()) a.push_back(base + "description=" + v[2]);
+                   return run_self(a, "command:" + v[0]);
                });
     }
 
@@ -1451,6 +1756,1126 @@ private:
         return a.empty() ? b : a + " (indexé)";
     }
 
+    /// Affiche les détails du commit sélectionné dans le panneau inférieur.
+    void git_show_commit(const vcs::CommitRef& c) {
+        std::string parents;
+        for (const auto& p : c.parents) parents += (parents.empty() ? "" : ", ") + p.substr(0, 7);
+        if (parents.empty()) parents = "aucun (racine)";
+        std::string refs;
+        if (c.head) refs += "HEAD ";
+        for (const auto& b : c.branches) refs += b + " ";
+        for (const auto& t : c.tags) refs += "tag:" + t + " ";
+        if (refs.empty()) refs = "—";
+        git_details_->set_text(std::format("{}{}\n{}\nAuteur : {} · Date : {}\nParents : {} · Réfs : {}",
+                                           c.is_merge() ? "◆ merge — " : "", c.hash, c.subject, c.author, c.date,
+                                           parents, util::trim(refs)));
+    }
+
+    // ========================================================================
+    // Menu contextuel et opérations Git de base
+    // ========================================================================
+
+    /// Menu contextuel d'un commit (clic droit).
+    void show_commit_menu(const vcs::CommitRef& c) {
+        auto list = std::make_shared<tui::ListView>();
+        std::vector<tui::ListItem> items;
+        std::vector<std::function<void()>> actions;
+        auto add = [&](const std::string& label, std::function<void()> fn) {
+            items.push_back({label, "", true, ""});
+            actions.push_back(std::move(fn));
+        };
+        add("Détails", [this, c] { git_show_details(c); });
+        add("Copier le hash", [this, c] { git_copy_hash(c); });
+        add("Ouvrir le diff", [this, c] { git_show_commit_diff(c); });
+        add("Cherry-pick", [this, c] { git_cherry_pick(c); });
+        add("Revert", [this, c] { git_revert(c); });
+        add("Checkout (HEAD détaché)", [this, c] { git_checkout(c); });
+        add("Restaurer à ce commit", [this, c] { git_restore_to_commit(c); });
+        // Branches pointant sur ce commit : renommer / supprimer / fusionner / rebaser.
+        for (const auto& b : c.branches) {
+            if (b.starts_with("origin/")) continue;
+            add("Fusionner " + b, [this, b] { git_merge_branch(b); });
+            add("Rebaser sur " + b, [this, b] { git_rebase_branch(b); });
+            add("Renommer la branche " + b, [this, c, b] { git_rename_branch_prompt(b); });
+            add("Supprimer la branche " + b, [this, c, b] { git_delete_branch(b); });
+        }
+        // Tags pointant sur ce commit : renommer / supprimer.
+        for (const auto& t : c.tags) {
+            add("Renommer le tag " + t, [this, c, t] { git_rename_tag_prompt(t); });
+            add("Supprimer le tag " + t, [this, c, t] { git_delete_tag(t); });
+        }
+        add("Reset (soft) à ce commit", [this, c] { git_reset_soft(c); });
+        // Réécriture d'historique : squash depuis un ancêtre (hors HEAD).
+        if (!c.head && vcs::is_ancestor(root_, c.hash, "HEAD")) {
+            add("Squash depuis ce commit…", [this, c] { git_squash_onto_prompt(c); });
+            if (!c.is_merge()) {
+                add("Supprimer ce commit", [this, c] { git_drop_commit(c); });
+                add("Réordonner depuis ce commit…", [this, c] { git_reorder_prompt(c); });
+            }
+        }
+        // Modifier le message du commit (seulement pour HEAD).
+        if (c.head) {
+            add("Modifier le message…", [this, c] { git_amend_message_prompt(); });
+            add("Fixup (intégrer l'index au dernier commit)", [this] { git_fixup_last(); });
+            add("Annuler le dernier commit (soft)", [this] { git_drop_last(); });
+        }
+        add("Créer une branche ici…", [this, c] { git_create_branch_prompt(c); });
+        add("Créer un tag ici…", [this, c] { git_create_tag_prompt(c); });
+        list->set_items(items);
+        list->set_on_activate([this, actions](size_t i) {
+            close_dialog();
+            if (i < actions.size()) actions[i]();
+            if (!dialog_->showing()) app_.focus_manager().set_focus(git_graph_);
+        });
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label(c.short_hash + "  " + c.subject, Tone::Accent), LayoutParams::fixed(1));
+        body->add_child(list, LayoutParams::stretch(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Commit ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{50, std::min(static_cast<int>(items.size()) + 5, 24)});
+        dialog_->show();
+        app_.focus_manager().set_focus(list);
+    }
+
+    void git_copy_hash(const vcs::CommitRef& c) {
+        tui::Clipboard::instance().set(c.hash);
+        set_status("✓ hash copié : " + c.short_hash, Tone::Success);
+    }
+
+    /// Détails complets du commit (B.1) : message entier, auteur/committer,
+    /// dates, parents, enfants, branches, tags.
+    void git_show_details(const vcs::CommitRef& c) {
+        auto d = vcs::commit_details(root_, c.hash);
+        auto join_short = [](const std::vector<std::string>& hashes) {
+            if (hashes.empty()) return std::string("aucun");
+            std::string r;
+            for (const auto& h : hashes) r += (r.empty() ? "" : ", ") + h.substr(0, 7);
+            return r;
+        };
+        std::string text;
+        text += d.hash + "\n\n";
+        text += d.subject + "\n";
+        if (!d.body.empty()) text += d.body + "\n";
+        text += "\nAuteur    : " + d.author_name + " <" + d.author_email + ">\n";
+        text += "Date      : " + d.author_date + "\n";
+        if (d.committer_name != d.author_name || d.committer_email != d.author_email) {
+            text += "Committer : " + d.committer_name + " <" + d.committer_email + ">\n";
+            text += "Date      : " + d.committer_date + "\n";
+        }
+        text += "\nParents   : " + join_short(d.parents) + "\n";
+        text += "Enfants   : " + join_short(d.children) + "\n";
+        text += "Branches  : " + (d.branches.empty() ? std::string("—") : util::join(d.branches, ", ")) + "\n";
+        text += "Tags      : " + (d.tags.empty() ? std::string("—") : util::join(d.tags, ", ")) + "\n";
+        if (d.head) text += "\nHEAD actif\n";
+
+        auto editor = std::make_shared<tui::TextArea>();
+        editor->set_read_only(true);
+        editor->set_show_scrollbar(true);
+        editor->set_text(text);
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label(c.short_hash + "  " + c.subject, Tone::Accent), LayoutParams::fixed(1));
+        body->add_child(editor, LayoutParams::stretch(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Détails du commit ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{72, 26});
+        dialog_->show();
+        app_.focus_manager().set_focus(editor);
+    }
+
+    /// Modifie le message du dernier commit (B.2) — avertissement si publié.
+    void git_amend_message_prompt() {
+        std::string up = vcs::upstream(root_);
+        bool published = !up.empty();
+        prompt("Modifier le message (amend)",
+               {{"Nouveau message", "", {}},
+                {"Confirmer la réécriture", "non", {"non", "oui"}}},
+               [this, published, up](const std::vector<std::string>& v) {
+                   if (v[1] != "oui") return false;
+                   if (util::trim(v[0]).empty()) { set_status("Message vide : rien n'est fait.", Tone::Warning); return false; }
+                   if (published)
+                       set_status("⚠ réécriture d'historique publié (" + up + ") : force-push requis côté distant", Tone::Warning);
+                   auto r = vcs::amend_message(root_, v[0]);
+                   if (!r.ok) { set_status("✗ amend : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ message du commit modifié", Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_rename_branch_prompt(const std::string& name) {
+        prompt("Renommer la branche " + name, {{"Nouveau nom", name, {}}},
+               [this, name](const std::vector<std::string>& v) {
+                   if (util::trim(v[0]).empty() || v[0] == name) return false;
+                   auto r = vcs::rename_branch(root_, name, v[0]);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ branche renommée : " + v[0], Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_delete_branch(const std::string& name) {
+        prompt("Supprimer la branche " + name, {{"Confirmer", "non", {"non", "oui"}}},
+               [this, name](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::delete_branch(root_, name, false);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ branche " + name + " supprimée", Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_rename_tag_prompt(const std::string& name) {
+        prompt("Renommer le tag " + name, {{"Nouveau nom", name, {}}},
+               [this, name](const std::vector<std::string>& v) {
+                   if (util::trim(v[0]).empty() || v[0] == name) return false;
+                   auto r = vcs::rename_tag(root_, name, v[0]);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ tag renommé : " + v[0], Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_delete_tag(const std::string& name) {
+        prompt("Supprimer le tag " + name, {{"Confirmer", "non", {"non", "oui"}}},
+               [this, name](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::delete_tag(root_, name);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ tag " + name + " supprimé", Tone::Success);
+                   return true;
+               });
+    }
+
+    /// Reset soft (HEAD déplacé, index et travail conservés).
+    void git_reset_soft(const vcs::CommitRef& c) {
+        prompt("Reset (soft) vers " + c.short_hash,
+               {{"Confirmer (HEAD déplacé, travail et index conservés)", "non", {"non", "oui"}}},
+               [this, c](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::reset(root_, c.hash, false);
+                   if (!r.ok) { set_status("✗ reset : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ HEAD déplacé sur " + c.short_hash, Tone::Success);
+                   return true;
+               });
+    }
+
+    // ========================================================================
+    // Réécriture d'historique (squash / fixup / drop, section D)
+    // ========================================================================
+
+    /// Squash : fusionne tous les commits après `c` (jusqu'à HEAD) en un seul.
+    void git_squash_onto_prompt(const vcs::CommitRef& c) {
+        std::string up = vcs::upstream(root_);
+        bool published = !up.empty();
+        std::string def = vcs::head_subject(root_);
+        prompt("Squash depuis " + c.short_hash,
+               {{"Message du commit fusionné", def.empty() ? "fusion de commits" : def, {}},
+                {"Confirmer la réécriture", "non", {"non", "oui"}}},
+               [this, c, published, up](const std::vector<std::string>& v) {
+                   if (v[1] != "oui") return false;
+                   if (util::trim(v[0]).empty()) { set_status("Message vide : rien n'est fait.", Tone::Warning); return false; }
+                   if (published)
+                       set_status("⚠ réécriture d'historique publié (" + up + ") : force-push requis côté distant", Tone::Warning);
+                   auto r = vcs::squash_onto(root_, c.hash, v[0]);
+                   if (!r.ok) { set_status("✗ squash : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ commits fusionnés depuis " + c.short_hash, Tone::Success);
+                   return true;
+               });
+    }
+
+    /// Fixup : intègre l'index dans le dernier commit sans changer son message.
+    void git_fixup_last() {
+        std::string up = vcs::upstream(root_);
+        bool published = !up.empty();
+        prompt("Fixup (intégrer l'index au dernier commit)",
+               {{"Confirmer l'amend (message inchangé)", "non", {"non", "oui"}}},
+               [this, published, up](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   if (published)
+                       set_status("⚠ réécriture d'historique publié (" + up + ") : force-push requis côté distant", Tone::Warning);
+                   auto r = vcs::fixup_last(root_);
+                   if (!r.ok) { set_status("✗ fixup : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ index intégré au dernier commit", Tone::Success);
+                   return true;
+               });
+    }
+
+    /// Drop : supprime le dernier commit en conservant ses modifications (soft).
+    void git_drop_last() {
+        prompt("Annuler le dernier commit (soft)",
+               {{"Confirmer (HEAD~1, modifications conservées dans l'index)", "non", {"non", "oui"}}},
+               [this](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::drop_last(root_);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ dernier commit annulé (soft)", Tone::Success);
+                   return true;
+               });
+    }
+
+    /// Supprime un commit arbitraire (non fusion) de l'historique (rebase --onto).
+    void git_drop_commit(const vcs::CommitRef& c) {
+        std::string up = vcs::upstream(root_);
+        bool published = !up.empty();
+        prompt("Supprimer le commit " + c.short_hash,
+               {{"Confirmer la suppression (rebase --onto)", "non", {"non", "oui"}}},
+               [this, c, published, up](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   if (published)
+                       set_status("⚠ réécriture d'historique publié (" + up + ") : force-push requis côté distant", Tone::Warning);
+                   auto r = vcs::drop_commit(root_, c.hash);
+                   if (!r.ok) { set_status("✗ suppression : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ commit " + c.short_hash + " supprimé", Tone::Success);
+                   return true;
+               });
+    }
+
+    /// Réordonne les commits après `c` (plus récent en haut de liste).
+    void git_reorder_prompt(const vcs::CommitRef& c) {
+        auto oldest = vcs::commits_in_range(root_, c.hash); // plus ancien → plus récent
+        if (oldest.size() < 2) { set_status("Moins de deux commits à réordonner.", Tone::Muted); return; }
+        // Affichage du plus récent au plus ancien (comme git log).
+        auto order = std::make_shared<std::vector<std::string>>(oldest.rbegin(), oldest.rend());
+
+        auto list = std::make_shared<tui::ListView>();
+        auto refresh = [list, order, this]() {
+            std::vector<tui::ListItem> items;
+            for (auto& h : *order)
+                items.push_back({h.substr(0, 7) + "  " + vcs::commit_subject(root_, h), "", true, ""});
+            list->set_items(items);
+        };
+        refresh();
+
+        auto move = [list, order, refresh](int delta) {
+            auto i = list->selected_index();
+            size_t n = order->size();
+            if (i >= n) return;
+            long j = static_cast<long>(i) + delta;
+            if (j < 0 || static_cast<size_t>(j) >= n) return;
+            std::swap((*order)[i], (*order)[static_cast<size_t>(j)]);
+            list->set_selected_index(static_cast<size_t>(j));
+            refresh();
+        };
+
+        auto buttons = std::make_shared<tui::Horizontal>();
+        buttons->add_class("actions");
+        buttons->add_child(button("↑ Monter", [move] { move(-1); }), LayoutParams::auto_size());
+        buttons->add_child(label(" "), LayoutParams::fixed(1));
+        buttons->add_child(button("↓ Descendre", [move] { move(1); }), LayoutParams::auto_size());
+        buttons->add_child(label(""), LayoutParams::stretch(1));
+        buttons->add_child(button("Appliquer", [this, c, order] {
+            std::string up = vcs::upstream(root_);
+            bool published = !up.empty();
+            std::vector<std::string> oldest(order->rbegin(), order->rend());
+            auto r = vcs::reorder_commits(root_, c.hash, oldest);
+            if (!r.ok) { set_status("✗ réordonnancement : " + first_line(r.error), Tone::Error); return; }
+            close_dialog();
+            if (published)
+                set_status("⚠ réécriture d'historique publié (" + up + ") : force-push requis côté distant", Tone::Warning);
+            refresh_git();
+            set_status("✓ commits réordonnés", Tone::Success);
+        }, "-primary"), LayoutParams::auto_size());
+        buttons->add_child(label(" "), LayoutParams::fixed(1));
+        buttons->add_child(button("Annuler", [this] { close_dialog(); }), LayoutParams::auto_size());
+
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label("Réordonner les commits après " + c.short_hash + " (le plus récent en haut)", Tone::Accent), LayoutParams::fixed(1));
+        body->add_child(list, LayoutParams::stretch(1));
+        body->add_child(buttons, LayoutParams::fixed(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Réordonner ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{64, std::min(static_cast<int>(oldest.size()) + 6, 24)});
+        dialog_->show();
+        app_.focus_manager().set_focus(list);
+    }
+
+    void git_merge_branch(const std::string& branch) {
+        prompt("Fusionner " + branch + " dans la branche courante", {{"Confirmer", "non", {"non", "oui"}}},
+               [this, branch](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::merge(root_, branch);
+                   if (!r.ok) { set_status("✗ fusion : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ " + branch + " fusionnée", Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_rebase_branch(const std::string& branch) {
+        prompt("Rebaser la branche courante sur " + branch, {{"Confirmer", "non", {"non", "oui"}}},
+               [this, branch](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::rebase(root_, branch);
+                   if (!r.ok) { set_status("✗ rebase : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ rebasé sur " + branch, Tone::Success);
+                   return true;
+               });
+    }
+
+    // ========================================================================
+    // Branches / Tags (onglets de liste)
+    // ========================================================================
+
+    /// Nom court (sans préfixe « local: » / « remote: ») de la branche `i`.
+    [[nodiscard]] std::string git_branch_name(size_t i) const {
+        if (i >= branches_.size()) return "";
+        const std::string& b = branches_[i];
+        return b.starts_with("remote:") ? b.substr(7) : b.substr(6);
+    }
+
+    void refresh_branches() {
+        if (!git_branches_) return;
+        branches_.clear();
+        for (auto& b : vcs::local_branches(root_)) branches_.push_back("local:" + b);
+        for (auto& b : vcs::remote_branches(root_)) branches_.push_back("remote:" + b);
+        auto merged = vcs::merged_branches(root_);
+        std::vector<tui::ListItem> items;
+        for (auto& b : branches_) {
+            bool remote = b.starts_with("remote:");
+            bool current = !remote && b.substr(6) == git_branch_current_;
+            std::string name = remote ? b.substr(7) : b.substr(6);
+            std::string status;
+            if (remote) status = "distant";
+            else if (current) status = "courante";
+            else if (util::contains(merged, name)) status = "fusionnée";
+            else if (!vcs::branch_has_upstream(root_, name)) status = "sans amont";
+            items.push_back({(current ? "* " : "") + name, status, true, ""});
+        }
+        if (items.empty()) items.push_back({"aucune branche", "", false, ""});
+        git_branches_->set_items(items);
+    }
+
+    void refresh_tags() {
+        if (!git_tags_) return;
+        tags_ = vcs::tags(root_);
+        std::vector<tui::ListItem> items;
+        for (auto& t : tags_) items.push_back({t, "", true, ""});
+        if (items.empty()) items.push_back({"aucun tag", "", false, ""});
+        git_tags_->set_items(items);
+    }
+
+    void git_checkout_branch(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= branches_.size()) return;
+        const std::string& b = branches_[static_cast<size_t>(index)];
+        bool remote = b.starts_with("remote:");
+        std::string name = git_branch_name(static_cast<size_t>(index));
+        if (remote) {
+            // Checkout d'une branche distante : crée une branche locale de suivi.
+            std::string local = name.substr(name.find('/') + 1);
+            prompt("Basculer sur " + name, {{"Nom local", local, {}}, {"Confirmer", "non", {"non", "oui"}}},
+                   [this, name](const std::vector<std::string>& v) {
+                       if (v[1] != "oui") return false;
+                       auto r = vcs::checkout(root_, v[0].empty() ? name : v[0]);
+                       if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                       refresh_git();
+                       return true;
+                   });
+            return;
+        }
+        auto r = vcs::checkout(root_, name);
+        if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return; }
+        refresh_git();
+        set_status("✓ basculé sur " + name, Tone::Success);
+    }
+
+    void git_push_branch(const std::string& branch) {
+        run_async("push " + branch, [this, branch] { return vcs::push(root_, branch); },
+                  [this, branch] { set_status("✓ " + branch + " poussée", Tone::Success); });
+    }
+
+    void git_push_delete_branch_prompt(const std::string& branch) {
+        prompt("Supprimer la branche distante " + branch, {{"Confirmer", "non", {"non", "oui"}}},
+               [this, branch](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   run_async("suppression distante de " + branch, [this, branch] { return vcs::push_delete_branch(root_, branch); },
+                             [this, branch] { set_status("✓ branche distante " + branch + " supprimée", Tone::Success); });
+                   return true;
+               });
+    }
+
+    void git_push_tag(const std::string& tag) {
+        run_async("push " + tag, [this, tag] { return vcs::push(root_, tag); },
+                  [this, tag] { set_status("✓ tag " + tag + " poussé", Tone::Success); });
+    }
+
+    void git_push_delete_tag_prompt(const std::string& tag) {
+        prompt("Supprimer le tag distant " + tag, {{"Confirmer", "non", {"non", "oui"}}},
+               [this, tag](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   run_async("suppression distante de " + tag, [this, tag] { return vcs::push_delete_tag(root_, tag); },
+                             [this, tag] { set_status("✓ tag distant " + tag + " supprimé", Tone::Success); });
+                   return true;
+               });
+    }
+
+    // ========================================================================
+    // Remotes (onglet de liste)
+    // ========================================================================
+
+    void refresh_remotes() {
+        if (!git_remotes_) return;
+        remotes_ = vcs::remotes(root_);
+        std::vector<tui::ListItem> items;
+        for (auto& n : remotes_) {
+            std::string url = vcs::remote_url(root_, n);
+            items.push_back({n + "  " + url, "", true, ""});
+        }
+        if (items.empty()) items.push_back({"aucun remote", "git remote add pour en ajouter un", false, ""});
+        git_remotes_->set_items(items);
+    }
+
+    void git_add_remote_prompt() {
+        prompt("Ajouter un remote", {{"Nom", "", {}}, {"URL", "", {}}},
+               [this](const std::vector<std::string>& v) {
+                   if (util::trim(v[0]).empty() || util::trim(v[1]).empty()) {
+                       set_status("Nom et URL requis.", Tone::Warning); return false;
+                   }
+                   auto r = vcs::add_remote(root_, v[0], v[1]);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ remote " + v[0] + " ajouté", Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_remove_remote_prompt(const std::string& name) {
+        prompt("Supprimer le remote " + name, {{"Confirmer", "non", {"non", "oui"}}},
+               [this, name](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::remove_remote(root_, name);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ remote " + name + " supprimé", Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_set_remote_url_prompt(const std::string& name) {
+        prompt("Modifier l'URL de " + name, {{"URL", vcs::remote_url(root_, name), {}}},
+               [this, name](const std::vector<std::string>& v) {
+                   if (util::trim(v[0]).empty()) { set_status("URL vide.", Tone::Warning); return false; }
+                   auto r = vcs::set_remote_url(root_, name, v[0]);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ URL de " + name + " modifiée", Tone::Success);
+                   return true;
+               });
+    }
+
+    /// Exécute une opération git en arrière-plan (sans bloquer l'interface).
+    /// `op` tourne sur un thread dédié ; le résultat est rapatrié sur le thread
+    /// de l'interface via App::post(). La future rejoint le thread à la
+    /// destruction (jamais de référence pendante).
+    void run_async(std::string busy, std::function<vcs::OpResult()> op, std::function<void()> done) {
+        set_status("⏳ " + busy + "…", Tone::Info);
+        // Nettoie les tâches déjà terminées.
+        std::erase_if(async_tasks_, [](std::future<void>& f) {
+            return f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+        });
+        async_tasks_.push_back(std::async(std::launch::async, [this, busy = std::move(busy), op = std::move(op), done = std::move(done)] {
+            auto r = op();
+            app_.post([this, busy, r = std::move(r), done = std::move(done)]() mutable {
+                if (!r.ok) set_status("✗ " + busy + " : " + first_line(r.error), Tone::Error);
+                else { done(); refresh_git(); }
+            });
+        }));
+    }
+
+    void git_fetch() {
+        run_async("fetch", [this] { return vcs::fetch(root_); },
+                  [this] { set_status("✓ fetch effectué", Tone::Success); });
+    }
+
+    void git_prune() {
+        run_async("prune", [this] { return vcs::prune(root_); },
+                  [this] { set_status("✓ références distantes élaguées", Tone::Success); });
+    }
+
+    void git_pull() {
+        run_async("pull", [this] { return vcs::pull(root_); },
+                  [this] { set_status("✓ pull effectué", Tone::Success); });
+    }
+
+    // ========================================================================
+    // Reflog (section I)
+    // ========================================================================
+
+    void refresh_reflog() {
+        if (!git_reflog_) return;
+        reflog_ = vcs::reflog(root_);
+        std::vector<tui::ListItem> items;
+        for (auto& e : reflog_) {
+            items.push_back({e.selector + "  " + e.hash + "  " + e.message, e.date, true, ""});
+        }
+        if (items.empty()) items.push_back({"aucune entrée", "", false, ""});
+        git_reflog_->set_items(items);
+    }
+
+    /// Checkout d'un ancien HEAD (HEAD détaché), avec sauvegarde du travail.
+    void git_reflog_checkout(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= reflog_.size()) return;
+        const std::string& sel = reflog_[static_cast<size_t>(index)].selector;
+        bool dirty = vcs::working_tree_dirty(root_);
+        prompt("Restaurer " + sel,
+               {{"Confirmer le checkout" + (dirty ? std::string(" (sauvegarde auto du travail)") : std::string()), "non", {"non", "oui"}}},
+               [this, sel, dirty](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   if (dirty) {
+                       auto r = vcs::backup_capture(root_);
+                       if (!r.ok) { set_status("✗ sauvegarde : " + first_line(r.error), Tone::Error); return false; }
+                   }
+                   auto r = vcs::checkout(root_, sel);
+                   if (!r.ok) { set_status("✗ checkout : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ HEAD détaché sur " + sel, Tone::Success);
+                   return true;
+               });
+    }
+
+    /// Reset soft vers un ancien HEAD (déplace la branche, conserve le travail).
+    void git_reflog_reset(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= reflog_.size()) return;
+        const std::string& sel = reflog_[static_cast<size_t>(index)].selector;
+        prompt("Reset (soft) vers " + sel,
+               {{"Confirmer (HEAD déplacé, travail et index conservés)", "non", {"non", "oui"}}},
+               [this, sel](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::reset(root_, sel, false);
+                   if (!r.ok) { set_status("✗ reset : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ HEAD déplacé sur " + sel, Tone::Success);
+                   return true;
+               });
+    }
+
+    // ========================================================================
+    // Stash (section I) + Blame
+    // ========================================================================
+
+    void refresh_stash() {
+        if (!git_stash_) return;
+        stash_ = vcs::stash_list(root_);
+        std::vector<tui::ListItem> items;
+        for (auto& s : stash_) items.push_back({s.ref + "  " + s.hash + "  " + s.message, s.date, true, ""});
+        if (items.empty()) items.push_back({"aucun stash", "", false, ""});
+        git_stash_->set_items(items);
+    }
+
+    void git_stash_push_prompt() {
+        if (!vcs::working_tree_dirty(root_)) {
+            set_status("Rien à remiser : copie de travail propre.", Tone::Muted);
+            return;
+        }
+        prompt("Remiser le travail (stash)",
+               {{"Message", "", {}},
+                {"Confirmer", "non", {"non", "oui"}}},
+               [this](const std::vector<std::string>& v) {
+                   if (v[1] != "oui") return false;
+                   auto r = vcs::stash_push(root_, v[0]);
+                   if (!r.ok) { set_status("✗ stash : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ travail remisé", Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_stash_apply(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= stash_.size()) return;
+        const std::string& ref = stash_[static_cast<size_t>(index)].ref;
+        auto r = vcs::stash_apply(root_, ref);
+        if (!r.ok) { set_status("✗ apply : " + first_line(r.error), Tone::Error); return; }
+        refresh_git();
+        set_status("✓ " + ref + " appliqué (conservé dans la pile)", Tone::Success);
+    }
+
+    void git_stash_pop(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= stash_.size()) return;
+        const std::string& ref = stash_[static_cast<size_t>(index)].ref;
+        prompt("Dépiler " + ref, {{"Confirmer (applique puis retire de la pile)", "non", {"non", "oui"}}},
+               [this, ref](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::stash_pop(root_, ref);
+                   if (!r.ok) { set_status("✗ pop : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ " + ref + " dépilé", Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_stash_drop(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= stash_.size()) return;
+        const std::string& ref = stash_[static_cast<size_t>(index)].ref;
+        prompt("Supprimer " + ref, {{"Confirmer (définitif, non récupérable)", "non", {"non", "oui"}}},
+               [this, ref](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::stash_drop(root_, ref);
+                   if (!r.ok) { set_status("✗ drop : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ " + ref + " supprimé", Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_stash_preview(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= stash_.size()) return;
+        const std::string& ref = stash_[static_cast<size_t>(index)].ref;
+        std::string text = vcs::stash_show(root_, ref);
+        if (text.empty()) text = "(aucune différence)";
+        auto view = std::make_shared<DiffView>(std::move(text));
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label(ref + "  " + stash_[static_cast<size_t>(index)].message, Tone::Accent), LayoutParams::fixed(1));
+        body->add_child(view, LayoutParams::stretch(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Stash ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{100, 32});
+        dialog_->show();
+        app_.focus_manager().set_focus(view);
+    }
+
+    /// Blame du fichier sélectionné dans l'onglet « Modifications ».
+    void git_blame_selected() {
+        auto paths = git_selection();
+        if (paths.size() != 1) { set_status("Sélectionnez un seul fichier.", Tone::Muted); return; }
+        git_blame_dialog(util::display(paths[0], root_));
+    }
+
+    void git_blame_dialog(const std::string& file) {
+        auto lines = vcs::blame(root_, file);
+        std::string text;
+        if (lines.empty()) {
+            text = "(aucune annotation — fichier non suivi ?)";
+        } else {
+            for (auto& l : lines) {
+                std::string a = l.author;
+                if (a.size() > 20) a = a.substr(0, 20);
+                else a += std::string(20 - a.size(), ' ');
+                text += l.hash + "  " + a + "  " + l.date + "  " + l.content + "\n";
+            }
+        }
+        auto view = std::make_shared<tui::TextArea>();
+        view->set_read_only(true);
+        view->set_show_scrollbar(true);
+        view->set_text(text);
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label("Blame — " + file, Tone::Accent), LayoutParams::fixed(1));
+        body->add_child(label("hash      auteur               date       ligne", Tone::Muted), LayoutParams::fixed(1));
+        body->add_child(view, LayoutParams::stretch(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Blame ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{100, 32});
+        dialog_->show();
+        app_.focus_manager().set_focus(view);
+    }
+
+    // ========================================================================
+    // Worktrees (section I)
+    // ========================================================================
+
+    void refresh_worktrees() {
+        if (!git_worktrees_) return;
+        worktrees_ = vcs::worktree_list(root_);
+        std::vector<tui::ListItem> items;
+        std::error_code ec;
+        for (auto& w : worktrees_) {
+            bool current = fs::equivalent(w.path, root_, ec);
+            ec.clear();
+            std::string status = w.detached ? "détaché" : w.branch.empty() ? "—" : w.branch;
+            items.push_back({(current ? "● " : "  ") + w.path + "  [" + w.head + "]", status, !current, ""});
+        }
+        if (items.empty()) items.push_back({"aucun worktree", "", false, ""});
+        git_worktrees_->set_items(items);
+    }
+
+    void git_worktree_add_prompt() {
+        prompt("Nouveau worktree",
+               {{"Chemin (dossier inexistant ou vide)", "", {}},
+                {"Branche (vide = dérivée du dossier)", "", {}},
+                {"Base (vide = HEAD)", "", {}}},
+               [this](const std::vector<std::string>& v) {
+                   if (util::trim(v[0]).empty()) { set_status("Chemin vide.", Tone::Warning); return false; }
+                   auto r = vcs::worktree_add(root_, util::trim(v[0]), util::trim(v[1]), util::trim(v[2]));
+                   if (!r.ok) { set_status("✗ worktree : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ worktree ajouté : " + util::trim(v[0]), Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_worktree_remove(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= worktrees_.size()) return;
+        const std::string& path = worktrees_[static_cast<size_t>(index)].path;
+        std::error_code ec;
+        bool current = fs::equivalent(path, root_, ec);
+        if (current) { set_status("Impossible de supprimer le worktree courant.", Tone::Warning); return; }
+        prompt("Supprimer le worktree " + path,
+               {{"Confirmer (refusé si modifications non commitées)", "non", {"non", "oui"}}},
+               [this, path](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::worktree_remove(root_, path);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ worktree supprimé : " + path, Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_worktree_prune() {
+        auto r = vcs::worktree_prune(root_);
+        if (!r.ok) { set_status("✗ prune : " + first_line(r.error), Tone::Error); return; }
+        refresh_worktrees();
+        set_status("✓ worktrees disparus élagués", Tone::Success);
+    }
+
+    /// Compare la branche sélectionnée avec HEAD (diff).
+    void git_compare_branch(const std::string& branch) {
+        std::string text = vcs::diff(root_, "HEAD", branch);
+        if (text.empty()) text = "(aucune différence avec HEAD)";
+        auto view = std::make_shared<DiffView>(std::move(text));
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label("Diff HEAD…" + branch, Tone::Accent), LayoutParams::fixed(1));
+        body->add_child(view, LayoutParams::stretch(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Comparaison ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{100, 32});
+        dialog_->show();
+        app_.focus_manager().set_focus(view);
+    }
+
+    // ========================================================================
+    // Conflits (section H)
+    // ========================================================================
+
+    /// Boîte de dialogue de résolution des conflits : liste des fichiers en
+    /// conflit + actions (local/entrant/résolu) + annulation de l'opération.
+    void git_resolve_conflicts() {
+        conflicts_ = vcs::conflicted_files(root_);
+        if (conflicts_.empty()) { set_status("Aucun conflit à résoudre.", Tone::Muted); return; }
+        auto list = std::make_shared<tui::ListView>();
+        auto reload = [this, list] {
+            conflicts_ = vcs::conflicted_files(root_);
+            std::vector<tui::ListItem> items;
+            for (auto& f : conflicts_) items.push_back({util::display(fs::path(f), root_), "", true, ""});
+            list->set_items(items);
+        };
+        std::vector<tui::ListItem> items;
+        for (auto& f : conflicts_) items.push_back({util::display(fs::path(f), root_), "", true, ""});
+        list->set_items(items);
+
+        auto resolve = [this, list, reload](std::function<vcs::OpResult(const std::string&)> fn) {
+            size_t i = list->selected_index();
+            if (i >= conflicts_.size()) return;
+            auto r = fn(conflicts_[i]);
+            if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return; }
+            reload();
+            refresh_git();
+            if (conflicts_.empty()) { close_dialog(); set_status("✓ tous les conflits résolus", Tone::Success); }
+        };
+
+        auto buttons = std::make_shared<tui::Horizontal>();
+        buttons->add_class("actions");
+        buttons->add_child(button("Local (ours)", [this, resolve] {
+            resolve([this](const std::string& f) { return vcs::resolve_ours(root_, f); });
+        }), LayoutParams::auto_size());
+        buttons->add_child(label(" "), LayoutParams::fixed(1));
+        buttons->add_child(button("Entrant (theirs)", [this, resolve] {
+            resolve([this](const std::string& f) { return vcs::resolve_theirs(root_, f); });
+        }), LayoutParams::auto_size());
+        buttons->add_child(label(" "), LayoutParams::fixed(1));
+        buttons->add_child(button("Marquer résolu", [this, resolve] {
+            resolve([this](const std::string& f) { return vcs::mark_resolved(root_, f); });
+        }, "-primary"), LayoutParams::auto_size());
+        buttons->add_child(label(""), LayoutParams::stretch(1));
+        buttons->add_child(button("Annuler l'opération", [this] { git_abort_operation(); }, "-error"), LayoutParams::auto_size());
+
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label((conflict_op_.empty() ? "conflit" : conflict_op_) + " — " + std::to_string(conflicts_.size()) + " fichier(s)",
+                              Tone::Warning), LayoutParams::fixed(1));
+        body->add_child(list, LayoutParams::stretch(1));
+        body->add_child(buttons, LayoutParams::fixed(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Conflits ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{76, 20});
+        dialog_->show();
+        app_.focus_manager().set_focus(list);
+    }
+
+    /// Annule l'opération en cours (merge/rebase/cherry-pick/revert).
+    void git_abort_operation() {
+        conflict_op_ = vcs::operation_in_progress(root_);
+        if (conflict_op_.empty()) { set_status("Aucune opération à annuler.", Tone::Muted); return; }
+        prompt("Annuler " + conflict_op_, {{"Confirmer", "non", {"non", "oui"}}},
+               [this](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::abort_operation(root_);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ " + conflict_op_ + " annulé", Tone::Success);
+                   return true;
+               });
+    }
+
+    // ========================================================================
+    // Staging partiel (hunks, section F)
+    // ========================================================================
+
+    /// Boîte de dialogue de staging par hunk pour le fichier sélectionné.
+    void git_hunks_dialog() {
+        auto paths = git_selection();
+        if (paths.size() != 1) { set_status("Sélectionnez un seul fichier.", Tone::Muted); return; }
+        std::string file = util::display(paths[0], root_);
+        auto fp = vcs::diff_hunks(root_, file, git_hunks_staged_);
+        if (fp.hunks.empty()) {
+            set_status("Aucun hunk " + std::string(git_hunks_staged_ ? "indexé" : "non indexé") + " pour ce fichier.", Tone::Muted);
+            return;
+        }
+        auto list = std::make_shared<tui::ListView>();
+        list->set_multi_select(true);
+        std::vector<tui::ListItem> items;
+        for (auto& h : fp.hunks) {
+            // Aperçu : en-tête + deux premières lignes du corps.
+            std::string prev = h.header;
+            auto bl = util::split(h.body, '\n', false);
+            for (size_t i = 0; i < bl.size() && i < 2; ++i) prev += "  " + bl[i] + " ";
+            items.push_back({h.header, prev, true, ""});
+        }
+        list->set_items(items);
+
+        auto buttons = std::make_shared<tui::Horizontal>();
+        buttons->add_class("actions");
+        buttons->add_child(button(git_hunks_staged_ ? "○ Non indexé" : "◉ Non indexé", [this] {
+            git_hunks_staged_ = false;
+            close_dialog();
+            git_hunks_dialog();
+        }), LayoutParams::auto_size());
+        buttons->add_child(label(" "), LayoutParams::fixed(1));
+        buttons->add_child(button(git_hunks_staged_ ? "◉ Indexé" : "○ Indexé", [this] {
+            git_hunks_staged_ = true;
+            close_dialog();
+            git_hunks_dialog();
+        }), LayoutParams::auto_size());
+        buttons->add_child(label(""), LayoutParams::stretch(1));
+        buttons->add_child(button(git_hunks_staged_ ? "Désindexer" : "Indexer", [this, fp, list, file] {
+            std::vector<size_t> sel;
+            for (size_t i = 0; i < fp.hunks.size(); ++i)
+                if (list->is_checked(i)) sel.push_back(i);
+            if (sel.empty()) { set_status("Aucun hunk sélectionné.", Tone::Warning); return; }
+            auto r = vcs::apply_hunks(root_, fp, sel, git_hunks_staged_);
+            if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return; }
+            close_dialog();
+            refresh_git();
+            set_status("✓ " + std::to_string(sel.size()) + " hunk(s) " + (git_hunks_staged_ ? "désindexé(s)" : "indexé(s)"), Tone::Success);
+        }, "-primary"), LayoutParams::auto_size());
+
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label(file + (git_hunks_staged_ ? " — indexé" : " — non indexé"), Tone::Accent), LayoutParams::fixed(1));
+        body->add_child(list, LayoutParams::stretch(1));
+        body->add_child(buttons, LayoutParams::fixed(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Staging partiel ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{80, 22});
+        dialog_->show();
+        app_.focus_manager().set_focus(list);
+    }
+
+    /// Ouvre le diff d'un commit dans une boîte de dialogue (lecture seule).
+    void git_show_commit_diff(const vcs::CommitRef& c) {
+        std::string text = vcs::show_commit(root_, c.hash);
+        if (text.empty()) text = "(aucune différence)";
+        auto view = std::make_shared<DiffView>(std::move(text));
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label(c.short_hash + "  " + c.subject, Tone::Accent), LayoutParams::fixed(1));
+        body->add_child(view, LayoutParams::stretch(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Diff ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{100, 32});
+        dialog_->show();
+        app_.focus_manager().set_focus(view);
+    }
+
+    /// Rafraîchit le diff du travail courant (onglet « Diff »).
+    void refresh_diff() {
+        if (!git_diff_view_) return;
+        std::string text = vcs::diff_working(root_, git_diff_staged_);
+        if (text.empty()) text = "(aucune différence " + std::string(git_diff_staged_ ? "indexée" : "non indexée") + ")";
+        git_diff_view_->set_text(std::move(text));
+    }
+
+    void git_cherry_pick(const vcs::CommitRef& c) {
+        auto r = vcs::cherry_pick(root_, c.hash);
+        if (!r.ok) { set_status("✗ cherry-pick : " + first_line(r.error), Tone::Error); return; }
+        refresh_git();
+        set_status("✓ cherry-pick " + c.short_hash, Tone::Success);
+    }
+
+    void git_revert(const vcs::CommitRef& c) {
+        auto r = vcs::revert(root_, c.hash);
+        if (!r.ok) { set_status("✗ revert : " + first_line(r.error), Tone::Error); return; }
+        refresh_git();
+        set_status("✓ revert " + c.short_hash, Tone::Success);
+    }
+
+    void git_checkout(const vcs::CommitRef& c) {
+        prompt("Checkout " + c.short_hash,
+               {{"Confirmer (HEAD détaché, modifs non commitées conservées)", "non", {"non", "oui"}}},
+               [this, c](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::checkout(root_, c.hash);
+                   if (!r.ok) { set_status("✗ checkout : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ HEAD détaché sur " + c.short_hash, Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_create_branch_prompt(const vcs::CommitRef& c) {
+        prompt("Nouvelle branche", {{"Nom", "", {}}, {"Basculer dessus", "oui", {"oui", "non"}}},
+               [this, c](const std::vector<std::string>& v) {
+                   if (v[0].empty()) { set_status("Nom vide : rien n'est fait.", Tone::Warning); return false; }
+                   if (vcs::branch_exists(root_, v[0])) { set_status("✗ la branche « " + v[0] + " » existe déjà", Tone::Error); return false; }
+                   auto r = vcs::create_branch(root_, v[0], c.hash, v[1] == "oui");
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ branche " + v[0] + " créée" + (v[1] == "oui" ? " (et active)" : ""), Tone::Success);
+                   return true;
+               });
+    }
+
+    void git_create_tag_prompt(const vcs::CommitRef& c) {
+        prompt("Nouveau tag", {{"Nom", "", {}}, {"Type", "annoté", {"annoté", "léger"}}, {"Message", "", {}}},
+               [this, c](const std::vector<std::string>& v) {
+                   if (v[0].empty()) { set_status("Nom vide : rien n'est fait.", Tone::Warning); return false; }
+                   if (vcs::tag_exists(root_, v[0])) { set_status("✗ le tag « " + v[0] + " » existe déjà", Tone::Error); return false; }
+                   bool annotated = v[1] == "annoté";
+                   auto r = vcs::create_tag(root_, v[0], v[2], c.hash, annotated);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   set_status("✓ tag " + v[0] + " créé", Tone::Success);
+                   return true;
+               });
+    }
+
+    // ========================================================================
+    // Sauvegarde / restauration (section C)
+    // ========================================================================
+
+    /// « Restaurer le dépôt à partir de ce commit » : sauvegarde automatiquement
+    /// le travail en cours (stash, y compris les fichiers non suivis) puis
+    /// détache HEAD sur le commit choisi.
+    void git_restore_to_commit(const vcs::CommitRef& c) {
+        bool dirty = vcs::working_tree_dirty(root_);
+        prompt("Restaurer " + c.short_hash,
+               {{"Confirmer le checkout" + (dirty ? std::string(" (sauvegarde auto du travail)") : std::string()), "non", {"non", "oui"}}},
+               [this, c, dirty](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   if (dirty) {
+                       auto r = vcs::backup_capture(root_);
+                       if (!r.ok) { set_status("✗ sauvegarde : " + first_line(r.error), Tone::Error); return false; }
+                   }
+                   auto r = vcs::checkout(root_, c.hash);
+                   if (!r.ok) { set_status("✗ checkout : " + first_line(r.error), Tone::Error); return false; }
+                   refresh_git();
+                   refresh_backups();
+                   set_status(dirty ? "✓ travail sauvegardé (stash) puis restauré sur " + c.short_hash
+                                   : "✓ restauré sur " + c.short_hash, Tone::Success);
+                   return true;
+               });
+    }
+
+    /// Restaure la sauvegarde `index` (préserve indexation + non suivis).
+    void git_restore_backup(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= backups_.size()) return;
+        bool dirty = vcs::working_tree_dirty(root_);
+        if (dirty)
+            set_status("⚠ travail courant modifié : la restauration peut entrer en conflit", Tone::Warning);
+        auto r = vcs::backup_restore(root_, backups_[static_cast<size_t>(index)].ref);
+        if (!r.ok) { set_status("✗ restauration : " + first_line(r.error), Tone::Error); return; }
+        refresh_git();
+        refresh_backups();
+        set_status("✓ sauvegarde restaurée (conservée : supprimez-la quand elle est inutile)", Tone::Success);
+    }
+
+    /// Prévisualise le diff d'une sauvegarde (C.3).
+    void git_preview_backup(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= backups_.size()) return;
+        std::string text = vcs::backup_preview(root_, backups_[static_cast<size_t>(index)].ref);
+        if (text.empty()) text = "(aucune différence)";
+        auto view = std::make_shared<DiffView>(std::move(text));
+        auto body = std::make_shared<tui::Vertical>();
+        body->add_child(label("Sauvegarde " + backups_[static_cast<size_t>(index)].id + " — " +
+                              backups_[static_cast<size_t>(index)].message, Tone::Accent), LayoutParams::fixed(1));
+        body->add_child(view, LayoutParams::stretch(1));
+        dialog_ok_ = nullptr;
+        dialog_kinds_.clear();
+        dialog_cancel_ = nullptr;
+        dialog_->set_title(" Aperçu de la sauvegarde ");
+        dialog_->set_content(body);
+        dialog_->set_size(tui::Size{100, 32});
+        dialog_->show();
+        app_.focus_manager().set_focus(view);
+    }
+
+    /// Supprime une sauvegarde (avec confirmation).
+    void git_drop_backup(int index) {
+        if (index < 0 || static_cast<size_t>(index) >= backups_.size()) return;
+        prompt("Supprimer la sauvegarde", {{"Confirmer", "non", {"non", "oui"}}},
+               [this, index](const std::vector<std::string>& v) {
+                   if (v[0] != "oui") return false;
+                   auto r = vcs::backup_drop(root_, backups_[static_cast<size_t>(index)].ref);
+                   if (!r.ok) { set_status("✗ " + first_line(r.error), Tone::Error); return false; }
+                   refresh_backups();
+                   set_status("✓ sauvegarde supprimée", Tone::Success);
+                   return true;
+               });
+    }
+
+    /// Rafraîchit la liste des sauvegardes (onglet « Sauvegardes »).
+    void refresh_backups() {
+        backups_ = vcs::backup_list(root_);
+        std::vector<tui::ListItem> items;
+        for (auto& b : backups_) {
+            items.push_back({std::format("[{}] {} ({})", b.branch, b.id, b.date), b.message, true, ""});
+        }
+        if (items.empty()) items.push_back({"aucune sauvegarde", "le travail est propre ou déjà restauré", false, ""});
+        git_backups_->set_items(items);
+    }
+
     void refresh_git() {
         git_paths_.clear();
         std::vector<NavItem> items;
@@ -1460,13 +2885,38 @@ private:
             items.push_back({"git:none", "Aucun dépôt : « Initialiser (git init) »", 0, Tone::Muted, ""});
             git_nav_->set_items(items);
             git_info_->set_text("Initialiser crée le dépôt, un .gitignore et installe le crochet pre-commit de cpp-maker.");
+            git_graph_->set_history(vcs::History{});
+            git_details_->set_text("Aucun historique.");
             return;
         }
+        // Historique des commits (graphe).
+        std::string keep_hash;
+        if (auto* c = git_graph_->selected()) keep_hash = c->short_hash;
+        auto h = vcs::history(ws_->root);
+        if (h.error.empty()) {
+            git_graph_->set_history(std::move(h));
+            if (!keep_hash.empty()) git_graph_->select_by_hash(keep_hash);
+            if (auto* c = git_graph_->selected()) git_show_commit(*c);
+        } else {
+            git_details_->set_text("✗ historique illisible : " + first_line(h.error));
+        }
+        refresh_backups();
+        refresh_diff();
         try {
             auto st = vcs::status(ws_->root);
-            git_branch_->set_text(std::format("Branche {}{}{}", st.branch.empty() ? "(détachée)" : st.branch,
+            git_branch_current_ = st.branch;
+            conflicts_ = vcs::conflicted_files(ws_->root);
+            conflict_op_ = vcs::operation_in_progress(ws_->root);
+            git_branch_->set_text(std::format("Branche {}{}{}{}", st.branch.empty() ? "(détachée)" : st.branch,
                                               st.upstream.empty() ? "" : " → " + st.upstream,
-                                              st.ahead || st.behind ? std::format("  (+{} / -{})", st.ahead, st.behind) : ""));
+                                              st.ahead || st.behind ? std::format("  (+{} / -{})", st.ahead, st.behind) : "",
+                                              !conflict_op_.empty() ? "  ⚠ " + conflict_op_ + " en cours" : ""));
+            refresh_branches();
+            refresh_tags();
+            refresh_remotes();
+            refresh_reflog();
+            refresh_stash();
+            refresh_worktrees();
             std::map<std::string, std::vector<const vcs::StatusEntry*>> groups;
             std::vector<std::string> order;
             for (auto& e : st.entries) {
@@ -1610,7 +3060,7 @@ private:
         if (index == kTabConfig) app_.focus_manager().set_focus(nav_);
         else if (index == kTabToml && editor_->tab_count()) app_.focus_manager().set_focus(editor_->active_editor());
         else if (index == kTabExec) app_.focus_manager().set_focus(term_);
-        else if (index == kTabGit) app_.focus_manager().set_focus(git_nav_);
+        else if (index == kTabGit) app_.focus_manager().set_focus(git_graph_);
     }
 
     void show_help() {
@@ -1671,6 +3121,26 @@ private:
             std::string t = app_.next_theme();
             save_theme(t);
             set_status("Thème " + t + " (F9 pour choisir)", Tone::Info);
+            return true;
+        }
+        // Ctrl+←/→ sur l'onglet Git : basculer entre les sous-onglets
+        // (Historique / Modifications / Sauvegardes).
+        if (tabs_->active_index() == kTabGit && e.ctrl && !dialog_->showing() &&
+            (e.key == tui::Key::Left || e.key == tui::Key::Right)) {
+            size_t n = git_tabs_->tab_count();
+            size_t cur = git_tabs_->active_index();
+            size_t next = e.key == tui::Key::Right ? (cur + 1) % n : (cur + n - 1) % n;
+            git_tabs_->set_active_index(next);
+            if (next == 0) app_.focus_manager().set_focus(git_graph_);
+            else if (next == 1) app_.focus_manager().set_focus(git_nav_);
+            else if (next == 2) { refresh_diff(); app_.focus_manager().set_focus(git_diff_view_); }
+            else if (next == 3) { refresh_branches(); app_.focus_manager().set_focus(git_branches_); }
+            else if (next == 4) { refresh_tags(); app_.focus_manager().set_focus(git_tags_); }
+            else if (next == 5) { refresh_remotes(); app_.focus_manager().set_focus(git_remotes_); }
+            else if (next == 6) { refresh_reflog(); app_.focus_manager().set_focus(git_reflog_); }
+            else if (next == 7) { refresh_backups(); app_.focus_manager().set_focus(git_backups_); }
+            else if (next == 8) { refresh_stash(); app_.focus_manager().set_focus(git_stash_); }
+            else { refresh_worktrees(); app_.focus_manager().set_focus(git_worktrees_); }
             return true;
         }
         switch (e.key) {

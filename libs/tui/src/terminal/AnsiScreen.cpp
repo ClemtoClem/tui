@@ -88,6 +88,10 @@ void AnsiScreen::resize(int cols, int rows) {
         for (int x = 0; x < std::min(old.width(), cols_); ++x) grid_.at(x, y) = old.at(x, y);
     cursor_row_ = std::clamp(cursor_row_, 0, rows_ - 1);
     cursor_col_ = std::clamp(cursor_col_, 0, cols_ - 1);
+    // La largeur des lignes du scrollback ne correspond plus : on l'abandonne
+    // uniquement si la largeur a changé (une variation de hauteur ne touche
+    // pas la largeur des lignes conservées).
+    if (old.width() != cols_) scrollback_.clear();
 }
 
 void AnsiScreen::feed(std::string_view bytes) {
@@ -161,6 +165,13 @@ void AnsiScreen::line_feed() {
 }
 
 void AnsiScreen::scroll_up() {
+    // La ligne qui sort par le haut rejoint le scrollback (borné).
+    if (scrollback_max_ > 0) {
+        std::vector<Cell> line(static_cast<size_t>(cols_));
+        for (int x = 0; x < cols_; ++x) line[static_cast<size_t>(x)] = grid_.at(x, 0);
+        scrollback_.push_back(std::move(line));
+        while (scrollback_.size() > scrollback_max_) scrollback_.pop_front();
+    }
     for (int y = 1; y < rows_; ++y) {
         for (int x = 0; x < cols_; ++x) grid_.at(x, y - 1) = grid_.at(x, y);
     }

@@ -3,8 +3,10 @@
  * @brief Fait défiler un enfant plus grand que la zone visible, via offset + clip.
  *
  * Le défilement est implémenté simplement : l'enfant est arrangé à sa
- * taille naturelle complète, décalée de -scroll ; le ClipGuard déjà
- * posé par Container::paint() masque tout ce qui dépasse bounds_.
+ * taille naturelle complète, décalée de -scroll ; le ClipGuard posé par
+ * Container::paint() masque tout ce qui dépasse bounds_. Les barres de
+ * défilement (verticale et horizontale) sont dessinées automatiquement par
+ * Widget::render() selon la politique (Hidden/Visible/Auto).
  */
 
 #pragma once
@@ -22,6 +24,8 @@ public:
         if (child) add_child(std::move(child));
     }
 
+    void set_accent_color(Color c) { set_scrollbar_color(c); need_repaint(); }
+
     [[nodiscard]] Size measure(const Constraints& c) const override {
         return c.clamp({c.max_width, c.max_height});
     }
@@ -31,9 +35,8 @@ public:
         if (child_count() == 0) { content_size_ = {0, 0}; return; }
 
         auto& child = child_at(0).widget;
-        content_size_ = child->measure_outer(Constraints::loose({kUnbounded, kUnbounded}));
-        content_size_.width = std::max(content_size_.width, final_rect.width);
-        content_size_.height = std::max(content_size_.height, final_rect.height);
+        Size natural = child->measure_outer(Constraints::loose({kUnbounded, kUnbounded}));
+        content_size_ = {std::max(natural.width, final_rect.width), std::max(natural.height, final_rect.height)};
         clamp_scroll();
 
         child->layout(Rect{
@@ -55,6 +58,11 @@ public:
     [[nodiscard]] int max_scroll_x() const { return std::max(content_size_.width - bounds_.width, 0); }
     [[nodiscard]] int max_scroll_y() const { return std::max(content_size_.height - bounds_.height, 0); }
 
+    // --- Barres de défilement (hooks Widget) ---
+    [[nodiscard]] Size content_size() const override { return content_size_; }
+    [[nodiscard]] Point scroll_offset() const override { return {scroll_x_, scroll_y_}; }
+    void set_scroll_offset(int x, int y) override { scroll_to(x, y); }
+
     bool on_key(const KeyEvent& e) override {
         switch (e.key) {
             case Key::Up: scroll_by(0, -1); return true;
@@ -70,6 +78,7 @@ public:
     bool on_mouse(const MouseEvent& e) override {
         if (e.button == MouseEvent::Button::WheelUp) { scroll_by(0, -3); return true; }
         if (e.button == MouseEvent::Button::WheelDown) { scroll_by(0, 3); return true; }
+        if (handle_scrollbar_mouse(e)) return true;
         return false;
     }
 

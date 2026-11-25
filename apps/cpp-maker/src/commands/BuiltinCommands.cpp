@@ -39,6 +39,7 @@ void RegisterBuiltinCommands(GlobalContext& g) {
     g.Register(std::make_shared<PackageCommand>());
     g.Register(std::make_shared<InstallCommand>());
     g.Register(std::make_shared<DeployCommand>());
+    g.Register(std::make_shared<CmdCommand>());
     // Outils
     g.Register(std::make_shared<ConfigCommand>());
     g.Register(std::make_shared<ExportGroup>());

@@ -28,6 +28,12 @@ namespace tui {
 
 class Buffer;
 
+/// Politique d'affichage des barres de défilement d'un widget.
+///   Hidden  : jamais affichées ;
+///   Visible : toujours affichées (piste visible même si le contenu tient) ;
+///   Auto    : affichées seulement si le contenu déborde du widget (défaut).
+enum class ScrollbarPolicy { Auto, Visible, Hidden };
+
 class Widget : public std::enable_shared_from_this<Widget> {
 public:
     virtual ~Widget() = default;
@@ -57,6 +63,10 @@ public:
     /// Retourne true si l'événement a été consommé (arrête la remontée).
     [[nodiscard]] virtual bool on_key(const KeyEvent&) { return false; }
     [[nodiscard]] virtual bool on_mouse(const MouseEvent&) { return false; }
+
+    /// Texte collé depuis le terminal (collage entre crochets, OSC 52…).
+    /// App route cet événement au widget focusé ; retourne true si consommé.
+    [[nodiscard]] virtual bool on_paste(const std::string&) { return false; }
 
     /// Demande à la chaîne d'ancêtres de rendre ce widget visible. À
     /// appeler typiquement par FocusManager après un changement de
@@ -134,6 +144,76 @@ public:
     void set_inline_style(std::string declarations) { css_inline_ = std::move(declarations); need_repaint(); }
     [[nodiscard]] const std::string& inline_style() const { return css_inline_; }
 
+    /// Description affichée en infobulle quand la souris survole ce widget
+    /// (ou l'un de ses descendants sans description propre).
+    void set_tooltip(std::string text) { tooltip_ = std::move(text); }
+    [[nodiscard]] const std::string& tooltip() const { return tooltip_; }
+
+    // ------------------------------------------------------------------
+    // Barres de défilement (Verticale + Horizontale)
+    // ------------------------------------------------------------------
+    //
+    // Un widget signale la taille de son contenu via content_size() et son
+    // défilement via scroll_offset()/set_scroll_offset(). La classe de base
+    // affiche alors automatiquement les barres (selon la politique) en
+    // réduisant le clip rect du contenu pour leur faire de la place.
+
+    /// Définit la politique des deux barres à la fois.
+    void set_scrollbar_policy(ScrollbarPolicy p) {
+        v_scrollbar_policy_ = h_scrollbar_policy_ = p;
+        need_repaint();
+    }
+    void set_v_scrollbar_policy(ScrollbarPolicy p) { v_scrollbar_policy_ = p; need_repaint(); }
+    void set_h_scrollbar_policy(ScrollbarPolicy p) { h_scrollbar_policy_ = p; need_repaint(); }
+    [[nodiscard]] ScrollbarPolicy v_scrollbar_policy() const { return v_scrollbar_policy_; }
+    [[nodiscard]] ScrollbarPolicy h_scrollbar_policy() const { return h_scrollbar_policy_; }
+    /// Raccourci de compatibilité : active (Auto) ou masque (Hidden) la
+    /// barre verticale uniquement.
+    void set_show_scrollbar(bool show) {
+        set_v_scrollbar_policy(show ? ScrollbarPolicy::Auto : ScrollbarPolicy::Hidden);
+    }
+    void set_scrollbar_color(Color c) { scrollbar_color_ = c; need_repaint(); }
+
+    /// Vrai si la barre verticale/horizontale est actuellement affichée
+    /// (résolution de la politique vis-à-vis de content_size()/bounds()).
+    [[nodiscard]] bool v_scrollbar_visible() const {
+        if (v_scrollbar_policy_ == ScrollbarPolicy::Hidden) return false;
+        if (v_scrollbar_policy_ == ScrollbarPolicy::Visible) return true;
+        return bounds_.height > 0 && content_size().height > bounds_.height;
+    }
+    [[nodiscard]] bool h_scrollbar_visible() const {
+        if (h_scrollbar_policy_ == ScrollbarPolicy::Hidden) return false;
+        if (h_scrollbar_policy_ == ScrollbarPolicy::Visible) return true;
+        return bounds_.width > 0 && content_size().width > bounds_.width;
+    }
+    /// Largeur/hauteur disponible pour le contenu (bornes réduites par la
+    /// place des barres affichées).
+    [[nodiscard]] int content_width() const { return std::max(bounds_.width - (v_scrollbar_visible() ? 1 : 0), 0); }
+    [[nodiscard]] int content_height() const { return std::max(bounds_.height - (h_scrollbar_visible() ? 1 : 0), 0); }
+
+    /// Taille du contenu (peut dépasser les bornes → barres en mode Auto).
+    /// Les widgets défilables la surchargent.
+    [[nodiscard]] virtual Size content_size() const { return bounds_.size(); }
+    /// Offset de défilement courant (x = horizontal, y = vertical).
+    [[nodiscard]] virtual Point scroll_offset() const { return {0, 0}; }
+    /// Positionne le défilement (saut de barre). No-op par défaut.
+    virtual void set_scroll_offset(int x, int y) { (void)x; (void)y; }
+
+    /// Gère le clic/glisser sur les pistes des barres (saut direct).
+    /// Retourne true si l'événement est consommé. Les widgets défilables
+    /// l'appellent en tête de on_mouse().
+    [[nodiscard]] bool handle_scrollbar_mouse(const MouseEvent& e);
+
+    /// Maj+molette : défilement horizontal (via set_scroll_offset).
+    /// Retourne true si l'événement est consommé.
+    [[nodiscard]] bool handle_h_scroll_wheel(const MouseEvent& e) {
+        if (!e.shift || (e.button != MouseEvent::Button::WheelUp && e.button != MouseEvent::Button::WheelDown)) return false;
+        int d = e.button == MouseEvent::Button::WheelUp ? -3 : 3;
+        Point off = scroll_offset();
+        set_scroll_offset(off.x + d, off.y);
+        return true;
+    }
+
     /// Titre / sous-titre affichés dans la bordure CSS (« border-title »).
     void set_border_title(std::string t) { border_title_ = std::move(t); need_repaint(); }
     [[nodiscard]] const std::string& border_title() const { return border_title_; }
@@ -169,6 +249,11 @@ public:
     [[nodiscard]] Size measure_outer(const Constraints& constraints) const;
     void layout(Rect outer);
     void render(Buffer& buffer) const;
+
+    /// Peint paint() clippé à la zone hors barres, sans dessiner les barres.
+    void paint_clipped(Buffer& buffer) const;
+    /// Dessine uniquement les barres (après la passe d'héritage du style).
+    void draw_scrollbars(Buffer& buffer) const;
 
     /// Rendu de la ligne courante des listes (ListView, TreeView…) : selon le
     /// CSS (« cursor-background », « cursor-color », « cursor-text-style »,
@@ -208,12 +293,17 @@ protected:
     std::string css_id_;
     std::vector<std::string> css_classes_;
     std::string css_inline_;
+    std::string tooltip_;
     std::string border_title_, border_subtitle_;
     ComputedStyle css_style_;
     bool css_disabled_ = false;
     bool css_focus_ = false;
     bool css_hovered_ = false;
     mutable std::string type_name_cache_;
+
+    ScrollbarPolicy v_scrollbar_policy_ = ScrollbarPolicy::Auto;
+    ScrollbarPolicy h_scrollbar_policy_ = ScrollbarPolicy::Auto;
+    Color scrollbar_color_ = Color::Default();
 };
 
 } // namespace tui

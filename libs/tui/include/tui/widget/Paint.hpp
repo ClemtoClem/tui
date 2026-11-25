@@ -20,8 +20,7 @@ inline int text(Buffer& b, int x, int y, int max_w, const std::string& text, Col
     auto decoded = TextHelper::truncate_to_width(TextHelper::decode_utf8(text), max_w);
     int w = 0;
     for (char32_t ch : decoded) {
-        int cw = TextHelper::display_width(std::u32string(1, ch));
-        if (cw <= 0) cw = 1;
+        int cw = std::max(1, TextHelper::codepoint_width(ch));
         b.set(x + w, y, Cell{ch, static_cast<uint8_t>(cw), fg, bg, st});
         if (cw == 2) b.set(x + w + 1, y, Cell::continuation());
         w += cw;

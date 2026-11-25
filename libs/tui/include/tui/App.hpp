@@ -14,6 +14,7 @@
 #pragma once
 
 #include "Buffer.hpp"
+#include "core/Clipboard.hpp"
 #include "core/Theme.hpp"
 #include "core/Timer.hpp"
 #include "style/Stylesheet.hpp"
@@ -21,6 +22,7 @@
 #include "terminal/ITerminalBackend.hpp"
 #include "widget/FocusManager.hpp"
 #include "widget/Widget.hpp"
+#include "widgets/Tooltip.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -183,6 +185,7 @@ private:
     void render_frame();
     void handle_mouse(const MouseEvent& e);
     void update_hover(const std::shared_ptr<Widget>& target);
+    void update_tooltip();
     [[nodiscard]] bool styling_active() const { return !stylesheet_.empty(); }
     void check_css_watch();
 
@@ -216,6 +219,11 @@ private:
     std::vector<std::weak_ptr<Widget>> hover_chain_;
     std::weak_ptr<Widget> hovered_;
     std::weak_ptr<Widget> captured_;
+    Point hover_pos_{-1, -1};
+    Tooltip tooltip_;
+    std::weak_ptr<Widget> tooltip_target_;
+    std::chrono::steady_clock::time_point hover_since_{};
+    static constexpr auto kTooltipDelay = std::chrono::milliseconds(500);
     struct WatchedCss {
         std::filesystem::path path;
         std::filesystem::file_time_type mtime;

@@ -31,6 +31,7 @@
 #pragma once
 
 #include "../Buffer.hpp"
+#include "../core/Clipboard.hpp"
 #include "../core/Text.hpp"
 #include "../widget/Scrollbar.hpp"
 #include "../widget/Widget.hpp"
@@ -90,11 +91,19 @@ public:
 
     bool on_key(const KeyEvent& e) override;
     bool on_mouse(const MouseEvent& e) override;
+    bool on_paste(const std::string& text) override;
 
     [[nodiscard]] Pos cursor() const { return selection_.cursor; }
     [[nodiscard]] bool has_selection() const { return !selection_.empty(); }
     [[nodiscard]] std::string selected_text() const;
+    /// Copie la sélection dans le presse-papiers (interne + système).
+    void copy_selection();
+    /// Coupe la sélection (presse-papiers + suppression).
     std::string cut_selection();
+    /// Colle le presse-papiers à la position du curseur.
+    void paste();
+    /// Sélectionne tout le document.
+    void select_all();
 
     [[nodiscard]] bool can_undo() const { return history_.can_undo(); }
     [[nodiscard]] bool can_redo() const { return history_.can_redo(); }
@@ -105,6 +114,19 @@ public:
     [[nodiscard]] const std::u32string& line(size_t i) const { return lines_[i]; }
     [[nodiscard]] int first_visible_line() const { return scroll_line_; }
 
+    // --- Barres de défilement (via Widget) ---
+    [[nodiscard]] Size content_size() const override {
+        int max_w = 0;
+        for (const auto& l : lines_) max_w = std::max(max_w, static_cast<int>(l.size()));
+        return {max_w, static_cast<int>(lines_.size())};
+    }
+    [[nodiscard]] Point scroll_offset() const override { return {scroll_col_, scroll_line_}; }
+    void set_scroll_offset(int x, int y) override {
+        scroll_line_ = std::clamp(y, 0, std::max(static_cast<int>(lines_.size()) - std::max(bounds_.height, 1), 0));
+        scroll_col_ = std::max(x, 0);
+        need_repaint();
+    }
+
     /// Ajoute un curseur secondaire (clampé, ignoré s'il coïncide avec un
     /// curseur existant) - voir la note multicurseur en tête de fichier.
     void add_cursor_at(Pos p);
@@ -112,10 +134,7 @@ public:
     [[nodiscard]] const std::vector<Pos>& secondary_cursors() const { return secondary_cursors_; }
     [[nodiscard]] bool has_multiple_cursors() const { return !secondary_cursors_.empty(); }
 
-    /// Réserve la dernière colonne pour une piste de défilement vertical
-    /// cliquable, comme ListView::set_show_scrollbar().
-    void set_show_scrollbar(bool show) { show_scrollbar_ = show; need_repaint(); }
-    void set_accent_color(Color color) { accent_color_ = color; need_repaint(); }
+    void set_accent_color(Color color) { accent_color_ = color; set_scrollbar_color(color); need_repaint(); }
 
     /// Place le curseur au début de la dernière ligne et fait défiler
     /// jusqu'à elle : utile pour un journal qui grossit par le bas.
@@ -141,6 +160,7 @@ private:
     [[nodiscard]] Pos move_word_left(Pos p) const;
     [[nodiscard]] Pos move_word_right(Pos p) const;
     void ensure_cursor_visible();
+    void clamp_scroll();
     void scroll_lines_by(int delta);
     [[nodiscard]] int content_width() const;
 
@@ -156,7 +176,6 @@ private:
     std::function<void()> on_change_;
     bool focused_ = false;
     bool read_only_ = false;
-    bool show_scrollbar_ = false;
     Color accent_color_ = Color::Default();
     int scroll_line_ = 0;
     int scroll_col_ = 0;

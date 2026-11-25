@@ -166,6 +166,14 @@ Tests : avec `framework = "builtin"`, cpp-maker fournit `#include <cpp-maker/tes
 (macros `TEST`, `CHECK_EQ`, `REQUIRE`, `SKIP`, compatibilité `EXPECT_*`/`ASSERT_*`) et le
 `main` des tests ; chaque cible ayant un dossier `tests/` produit `<cible>-tests`.
 
+**En-têtes et modules.** Un en-tête public se référence par son chemin complet
+(`#include "log/log.hpp"`) ou, s'il s'agit du fichier principal d'un module
+(`include/<nom>/<nom>.hpp`), par le raccourci `#include "log"`. Quand le même nom de
+module existe dans plusieurs layers, le raccourci devient ambigu : précisez alors le
+layer (`#include "net/log"` ou `#include "core/log/log.hpp"`). Les dépendances de
+modules C++20/C++23 (`import core.log;`, `export import net.http;`) sont détectées de la
+même façon par `cpp-maker doctor` — les unités d'en-tête (`import <…>;`) sont ignorées.
+
 ## 3. Commandes
 
 `cpp-maker help <commande>` ou `cpp-maker <commande> --help` détaille chaque commande.
@@ -234,7 +242,7 @@ demande une nouvelle revue. Avec `[build].require_approval = true` (ou `--requir
 | `config validate` / `config keys [type]` / `config edit` | valider / lister les clés / éditer dans `$EDITOR` |
 | `export compdb\|ninja\|xml` | `compile_commands.json`, `build.ninja`, archive XML de cibles |
 | `toolchain list\|show\|which\|add\|use\|install\|remove` | compilateurs, profils, versions gcc (apt) |
-| `doctor [--fix] [--strict]` | diagnostic (config, outils, toolchains, `#include` non déclarés) |
+| `doctor [--fix] [--strict]` | diagnostic (config, outils, toolchains, `#include` et `import` non déclarés) |
 | `review status\|approve\|reject\|request [cible…] [--by N] [--note T]` | approbation des cibles |
 | `tui` | interface interactive |
 
@@ -365,7 +373,7 @@ include/ src/
   toolchain/   détection des compilateurs, cibles croisées, sanitizers
   build/       planificateur (DAG), exécuteur parallèle, sessions, tests, exports
   deliver/     staging, paquets, installation, déploiement
-  analysis/    lecteur ELF, analyse des #include
+  analysis/    lecteur ELF, analyse des #include et des modules C++ (import/export)
   vcs/         git : état par cible, crochet, règles pre-commit et leur maintenance
   commands/    une classe par commande (patron Commande) + GlobalContext (registre, aiguillage)
   ui/          TUI : widgets, formulaires générés, application

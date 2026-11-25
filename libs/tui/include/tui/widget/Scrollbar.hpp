@@ -52,6 +52,36 @@ inline void draw_vertical_scrollbar(Buffer& buffer, Rect track_rect, int content
     return std::clamp(pos, 0, max_pos);
 }
 
+/// Dessine une piste de défilement horizontale sur 1 ligne. Même convention
+/// que draw_vertical_scrollbar (curseur masqué quand le contenu tient).
+inline void draw_horizontal_scrollbar(Buffer& buffer, Rect track_rect, int content_size, int viewport_size,
+                                      int position, Color thumb_color, Color track_color = Color::Default()) {
+    if (track_rect.width <= 0 || track_rect.height <= 0) return;
+    int track_w = track_rect.width;
+    for (int x = 0; x < track_w; ++x) {
+        buffer.set(track_rect.x + x, track_rect.y, Cell{U'─', 1, track_color, Color::Default(), TextStyle::None});
+    }
+    if (content_size <= viewport_size || content_size <= 0 || viewport_size <= 0) return;
+
+    int thumb_size = std::clamp((viewport_size * track_w) / content_size, 1, track_w);
+    int max_pos = std::max(content_size - viewport_size, 1);
+    int max_offset = std::max(track_w - thumb_size, 0);
+    int thumb_offset = (max_offset * std::clamp(position, 0, max_pos)) / max_pos;
+
+    for (int x = thumb_offset; x < thumb_offset + thumb_size && x < track_w; ++x) {
+        buffer.set(track_rect.x + x, track_rect.y, Cell{U'█', 1, thumb_color, Color::Default(), TextStyle::None});
+    }
+}
+
+/// Convertit une coordonnée souris sur la piste horizontale en position cible.
+[[nodiscard]] inline int scrollbar_hit_to_position_x(Rect track_rect, int content_size, int viewport_size, int mouse_x) {
+    int max_pos = std::max(content_size - viewport_size, 0);
+    if (max_pos <= 0 || track_rect.width <= 1) return 0;
+    double ratio = static_cast<double>(mouse_x - track_rect.x) / static_cast<double>(track_rect.width - 1);
+    int pos = static_cast<int>(ratio * static_cast<double>(max_pos) + 0.5);
+    return std::clamp(pos, 0, max_pos);
+}
+
 /// Widget de scrollbar autonome, pour piloter le défilement d'un contenu
 /// qui ne gère pas lui-même une colonne de scrollbar (ex: TextArea, ou
 /// tout widget maison). Le propriétaire synchronise content/viewport/

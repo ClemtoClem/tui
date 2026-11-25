@@ -53,4 +53,23 @@ public:
     int Run(Context& ctx) override;
 };
 
+/// « cpp-maker cmd <nom> » : exécute une commande personnalisée ([commands.<nom>]).
+class CmdCommand : public Command {
+public:
+    std::string GetName() const override { return "cmd"; }
+    std::string GetDescription() const override { return "Exécuter une commande personnalisée [commands.<nom>]"; }
+    std::string GetUsage() const override { return "<nom>|list"; }
+    std::string GetDetails() const override {
+        return "Les commandes sont des scripts shell définis dans project.toml :\n"
+               "  [commands.clean-data]\n"
+               "  command = \"rm -rf ~/.local/share/apps-lib\"\n"
+               "Sans argument, liste les commandes du projet ; exécutées depuis la racine.";
+    }
+    std::vector<std::string> GetExamples() const override {
+        return {"cpp-maker cmd", "cpp-maker cmd clean-data"};
+    }
+    Category GetCategory() const override { return Category::Tools; }
+    int Run(Context& ctx) override;
+};
+
 } // namespace commands
